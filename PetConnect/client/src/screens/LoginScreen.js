@@ -18,9 +18,19 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleSubmit = async () => {
+    const email = form.email.trim().toLowerCase();
+    if (!email || !form.password) {
+      setAuthError('Email and password are required.');
+      return;
+    }
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setAuthError('Enter a valid email address.');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
-      await login(form);
+      await login({ email, password: form.password });
     } catch (error) {
       setAuthError(getErrorMessage(error));
     } finally {

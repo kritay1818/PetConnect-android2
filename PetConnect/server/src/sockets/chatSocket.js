@@ -54,30 +54,35 @@ const registerChatSocket = (io) => {
     const userRoom = socket.user._id.toString();
 
     socket.join(userRoom);
-    socket.emit('join', {
-      userId: userRoom,
-      message: 'Joined personal room'
-    });
 
-    console.log(`Socket connected: ${socket.id} for user ${userRoom}`);
-
-    socket.on('join', () => {
-      socket.join(userRoom);
-      socket.emit('join', {
-        userId: userRoom,
-        message: 'Joined personal room'
-      });
-    });
+    if (process.env.NODE_ENV !== 'test') {
+      console.log(`Socket connected: ${socket.id} for user ${userRoom}`);
+    }
 
     socket.on('sendMessage', async (payload, callback) => {
+      const socketResponse = {
+        statusCode: 500,
+        status(code) {
+          socketResponse.statusCode = code;
+          return socketResponse;
+        }
+      };
       try {
         const { receiver, text } = payload || {};
-        const socketResponse = {
-          status: () => socketResponse
-        };
 
-        if (!text || !text.trim()) {
+        if (typeof receiver !== 'string') {
+          socketResponse.status(400);
+          throw new Error('receiver must be a valid ObjectId');
+        }
+
+        if (typeof text !== 'string' || !text.trim()) {
+          socketResponse.status(400);
           throw new Error('Message text is required');
+        }
+
+        if (text.length > 2000) {
+          socketResponse.status(400);
+          throw new Error('Message text cannot exceed 2000 characters');
         }
 
         await ensureValidReceiver(receiver, socket.user._id, socketResponse);
@@ -85,7 +90,7 @@ const registerChatSocket = (io) => {
         const message = await createMessage({
           senderId: socket.user._id,
           receiverId: receiver,
-          text
+          text: text.trim()
         });
 
         io.to(message.receiver._id.toString()).emit('receiveMessage', message);
@@ -96,17 +101,19 @@ const registerChatSocket = (io) => {
         }
       } catch (error) {
         if (callback) {
-          callback({ ok: false, error: error.message });
+          callback({
+            ok: false,
+            error: socketResponse.statusCode < 500 ? error.message : 'Could not send message'
+          });
         }
 
-        socket.emit('receiveMessage', {
-          error: error.message
-        });
       }
     });
 
     socket.on('disconnect', () => {
-      console.log(`Socket disconnected: ${socket.id} for user ${userRoom}`);
+      if (process.env.NODE_ENV !== 'test') {
+        console.log(`Socket disconnected: ${socket.id} for user ${userRoom}`);
+      }
     });
   });
 };

@@ -21,9 +21,12 @@ import api from '../services/api';
 
 const initialForm = {
   content: '',
-  imageUri: '',
+  imageAsset: null,
+  imageUrl: '',
+  removeImage: false,
   videoUrl: '',
-  group: ''
+  group: '',
+  pet: ''
 };
 
 const initialSearch = {
@@ -35,6 +38,8 @@ const initialSearch = {
 
 const STICKER_VIEWBOX_WIDTH = 360;
 const STICKER_VIEWBOX_HEIGHT = 320;
+const MAX_STICKER_STROKES = 30;
+const MAX_STICKER_POINTS = 500;
 
 const getErrorMessage = (error, fallback) =>
   error.response?.data?.message || fallback;
@@ -60,25 +65,36 @@ const getStickerStrokes = (stickerData) => {
     return [];
   }
 
-  return stickerData.filter(
-    (stroke) =>
-      stroke &&
-      Array.isArray(stroke.points) &&
-      stroke.points.length > 0 &&
-      typeof stroke.color === 'string'
-  );
+  return stickerData.slice(0, MAX_STICKER_STROKES).reduce((safeStrokes, stroke) => {
+    if (!stroke || !Array.isArray(stroke.points) || typeof stroke.color !== 'string') {
+      return safeStrokes;
+    }
+    const points = stroke.points.slice(0, MAX_STICKER_POINTS).filter(
+      (point) => Number.isFinite(point?.x) && Number.isFinite(point?.y)
+    ).map((point) => ({
+      x: Math.max(0, Math.min(STICKER_VIEWBOX_WIDTH, point.x)),
+      y: Math.max(0, Math.min(STICKER_VIEWBOX_HEIGHT, point.y))
+    }));
+    if (points.length) safeStrokes.push({ color: stroke.color.slice(0, 32), points });
+    return safeStrokes;
+  }, []);
 };
 
 export default function HomeFeedScreen() {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState('feed');
+  const [activeTab, setActiveTab] = useState('combined');
   const [feedPosts, setFeedPosts] = useState([]);
   const [myPosts, setMyPosts] = useState([]);
+  const [friendsPosts, setFriendsPosts] = useState([]);
+  const [groupPosts, setGroupPosts] = useState([]);
   const [groups, setGroups] = useState([]);
+  const [pets, setPets] = useState([]);
   const [form, setForm] = useState(initialForm);
   const [search, setSearch] = useState(initialSearch);
   const [comments, setComments] = useState({});
   const [expandedComments, setExpandedComments] = useState({});
+  const [videoLoading, setVideoLoading] = useState({});
+  const [videoErrors, setVideoErrors] = useState({});
   const [editingPostId, setEditingPostId] = useState(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [isSearchVisible, setIsSearchVisible] = useState(false);
@@ -97,15 +113,21 @@ export default function HomeFeedScreen() {
         setIsLoading(true);
       }
 
-      const [feedResponse, myResponse, groupsResponse] = await Promise.all([
+      const [feedResponse, myResponse, friendsResponse, groupPostsResponse, groupsResponse, petsResponse] = await Promise.all([
         api.get('/posts/feed'),
         api.get('/posts/my'),
-        api.get('/groups/my')
+        api.get('/posts/feed/friends'),
+        api.get('/posts/feed/groups'),
+        api.get('/groups/my'),
+        api.get('/pets/my')
       ]);
 
       setFeedPosts(feedResponse.data.posts || []);
       setMyPosts(myResponse.data.posts || []);
+      setFriendsPosts(friendsResponse.data.posts || []);
+      setGroupPosts(groupPostsResponse.data.posts || []);
       setGroups(groupsResponse.data.groups || []);
+      setPets(petsResponse.data.pets || []);
     } catch (fetchError) {
       setError(getErrorMessage(fetchError, 'Could not load posts.'));
     } finally {
@@ -121,8 +143,8 @@ export default function HomeFeedScreen() {
   );
 
   const displayedPosts = useMemo(
-    () => (activeTab === 'feed' ? feedPosts : myPosts),
-    [activeTab, feedPosts, myPosts]
+    () => ({ combined: feedPosts, my: myPosts, friends: friendsPosts, groups: groupPosts }[activeTab] || []),
+    [activeTab, feedPosts, friendsPosts, groupPosts, myPosts]
   );
 
   const updateFormField = (name, value) => {
@@ -148,9 +170,12 @@ export default function HomeFeedScreen() {
   const openEditForm = (post) => {
     setForm({
       content: post.content || '',
-      imageUri: post.imageUri || '',
+      imageAsset: null,
+      imageUrl: post.imageUrl || '',
+      removeImage: false,
       videoUrl: post.videoUrl || '',
-      group: getId(post.group)
+      group: getId(post.group),
+      pet: getId(post.pet)
     });
     setEditingPostId(post._id);
     setIsFormVisible(true);
@@ -162,15 +187,39 @@ export default function HomeFeedScreen() {
       return 'Post content is required.';
     }
 
+    if (form.content.trim().length > 5000) {
+      return 'Post content cannot exceed 5000 characters.';
+    }
+
+    if (form.videoUrl.trim()) {
+      try {
+        const url = new URL(form.videoUrl.trim());
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
+      } catch (error) {
+        return 'Video URL must be a valid HTTP or HTTPS URL.';
+      }
+    }
+
     return '';
   };
 
-  const buildPayload = () => ({
-    content: form.content.trim(),
-    imageUri: form.imageUri,
-    videoUrl: form.videoUrl.trim() || undefined,
-    group: form.group || undefined
-  });
+  const buildPayload = () => {
+    const payload = new FormData();
+    payload.append('content', form.content.trim());
+    payload.append('group', form.group);
+    payload.append('pet', form.pet);
+    if (form.videoUrl.trim()) payload.append('videoUrl', form.videoUrl.trim());
+    if (editingPostId && !form.videoUrl.trim()) payload.append('removeVideo', 'true');
+    if (form.removeImage) payload.append('removeImage', 'true');
+    if (form.imageAsset) {
+      payload.append('media', {
+        uri: form.imageAsset.uri,
+        name: form.imageAsset.fileName || `post-${Date.now()}.jpg`,
+        type: form.imageAsset.mimeType || 'image/jpeg'
+      });
+    }
+    return payload;
+  };
 
   const choosePhoto = async () => {
     try {
@@ -190,7 +239,16 @@ export default function HomeFeedScreen() {
       });
 
       if (!result.canceled && result.assets?.length) {
-        updateFormField('imageUri', result.assets[0].uri);
+        const asset = result.assets[0];
+        if (asset.fileSize && asset.fileSize > 10 * 1024 * 1024) {
+          setFormError('Post images must be 10 MB or smaller.');
+          return;
+        }
+        if (asset.mimeType && !['image/jpeg', 'image/png', 'image/webp'].includes(asset.mimeType)) {
+          setFormError('Choose a JPEG, PNG, or WebP image.');
+          return;
+        }
+        setForm((current) => ({ ...current, imageAsset: asset, removeImage: false }));
       }
     } catch (pickerError) {
       setFormError('Could not open the photo library.');
@@ -210,9 +268,9 @@ export default function HomeFeedScreen() {
       setFormError('');
 
       if (editingPostId) {
-        await api.put(`/posts/${editingPostId}`, buildPayload());
+        await api.put(`/posts/${editingPostId}`, buildPayload(), { headers: { 'Content-Type': 'multipart/form-data' } });
       } else {
-        await api.post('/posts', buildPayload());
+        await api.post('/posts', buildPayload(), { headers: { 'Content-Type': 'multipart/form-data' } });
       }
 
       resetForm();
@@ -279,6 +337,11 @@ export default function HomeFeedScreen() {
       return;
     }
 
+    if (text.length > 2000) {
+      setError('Comments cannot exceed 2000 characters.');
+      return;
+    }
+
     try {
       setError('');
       await api.post(`/posts/${postId}/comment`, { text });
@@ -291,27 +354,51 @@ export default function HomeFeedScreen() {
   };
 
   const handleSearch = async () => {
+    const keyword = search.keyword.trim();
+    const startDate = search.startDate.trim();
+    const endDate = search.endDate.trim();
+
+    if (keyword.length > 100) {
+      setError('Search keyword cannot exceed 100 characters.');
+      return;
+    }
+
+    if (startDate && Number.isNaN(Date.parse(startDate))) {
+      setError('Start date must be valid.');
+      return;
+    }
+
+    if (endDate && Number.isNaN(Date.parse(endDate))) {
+      setError('End date must be valid.');
+      return;
+    }
+
+    if (startDate && endDate && new Date(endDate) < new Date(startDate)) {
+      setError('End date must be on or after start date.');
+      return;
+    }
+
     try {
       setError('');
       setIsLoading(true);
 
       const params = {};
-      if (search.keyword.trim()) {
-        params.keyword = search.keyword.trim();
+      if (keyword) {
+        params.keyword = keyword;
       }
       if (search.group) {
         params.group = search.group;
       }
-      if (search.startDate.trim()) {
-        params.startDate = search.startDate.trim();
+      if (startDate) {
+        params.startDate = startDate;
       }
-      if (search.endDate.trim()) {
-        params.endDate = search.endDate.trim();
+      if (endDate) {
+        params.endDate = endDate;
       }
 
       const { data } = await api.get('/posts/search', { params });
       setFeedPosts(data.posts || []);
-      setActiveTab('feed');
+      setActiveTab('combined');
     } catch (searchError) {
       setError(getErrorMessage(searchError, 'Could not search posts.'));
     } finally {
@@ -324,7 +411,7 @@ export default function HomeFeedScreen() {
     await fetchPosts();
   };
 
-  const isAuthor = (post) => getId(post.author) === user?.id;
+  const isAuthor = (post) => getId(post.author) === user?._id;
 
   const toggleComments = (postId) => {
     setExpandedComments((current) => ({
@@ -364,12 +451,25 @@ export default function HomeFeedScreen() {
     </View>
   );
 
+  const renderPetPicker = (selectedValue, onSelect) => (
+    <View style={styles.chipGrid}>
+      <TouchableOpacity style={[styles.chip, selectedValue === '' && styles.chipActive]} onPress={() => onSelect('')}>
+        <Text style={[styles.chipText, selectedValue === '' && styles.chipTextActive]}>none</Text>
+      </TouchableOpacity>
+      {pets.map((pet) => (
+        <TouchableOpacity key={pet._id} style={[styles.chip, selectedValue === pet._id && styles.chipActive]} onPress={() => onSelect(pet._id)}>
+          <Text style={[styles.chipText, selectedValue === pet._id && styles.chipTextActive]}>{pet.name}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
   const renderPostCard = (post) => {
-    const authorName =
-      typeof post.author === 'object' ? post.author.username : 'Unknown author';
-    const groupName = typeof post.group === 'object' ? post.group.name : '';
-    const petName = typeof post.pet === 'object' ? post.pet.name : '';
+    const authorName = post.author?.username || 'Unknown author';
+    const groupName = post.group?.name || '';
+    const petName = post.pet?.name || '';
     const currentUserIsAuthor = isAuthor(post);
+    const currentUserIsGroupAdmin = getId(post.group?.admin) === user?._id;
     const postComments = post.comments || [];
     const commentsAreOpen = !!expandedComments[post._id];
     const stickerStrokes = getStickerStrokes(post.stickerData);
@@ -385,11 +485,13 @@ export default function HomeFeedScreen() {
             </Text>
           </View>
 
-          {currentUserIsAuthor ? (
+          {currentUserIsAuthor || currentUserIsGroupAdmin ? (
             <View style={styles.actions}>
-              <TouchableOpacity onPress={() => openEditForm(post)}>
-                <Text style={styles.editText}>Edit</Text>
-              </TouchableOpacity>
+              {currentUserIsAuthor ? (
+                <TouchableOpacity onPress={() => openEditForm(post)}>
+                  <Text style={styles.editText}>Edit</Text>
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity onPress={() => confirmDelete(post)}>
                 <Text style={styles.deleteText}>Delete</Text>
               </TouchableOpacity>
@@ -405,27 +507,36 @@ export default function HomeFeedScreen() {
           </View>
         ) : null}
 
-        {post.imageUri || post.imageUrl ? (
-          <Image source={{ uri: post.imageUri || post.imageUrl }} style={styles.postImage} />
+        {post.imageUrl ? (
+          <Image source={{ uri: post.imageUrl }} style={styles.postImage} />
         ) : null}
 
-        {post.videoUri ? (
+        {post.videoUrl ? (
           <View style={styles.postVideoFrame}>
+            {videoLoading[post._id] ? (
+              <View style={styles.videoStatusOverlay}><ActivityIndicator color="#ffffff" /></View>
+            ) : null}
             <Video
-              source={{ uri: post.videoUri }}
+              source={{ uri: post.videoUrl }}
               style={styles.postVideo}
               useNativeControls
               resizeMode={ResizeMode.CONTAIN}
+              onLoadStart={() => {
+                setVideoErrors((current) => ({ ...current, [post._id]: '' }));
+                setVideoLoading((current) => ({ ...current, [post._id]: true }));
+              }}
+              onLoad={() => setVideoLoading((current) => ({ ...current, [post._id]: false }))}
+              onError={() => {
+                setVideoLoading((current) => ({ ...current, [post._id]: false }));
+                setVideoErrors((current) => ({ ...current, [post._id]: 'Video could not be loaded.' }));
+              }}
             />
+            {videoErrors[post._id] ? (
+              <View style={styles.videoStatusOverlay}><Text style={styles.videoErrorText}>{videoErrors[post._id]}</Text></View>
+            ) : null}
           </View>
         ) : null}
 
-        {!post.videoUri && post.videoUrl ? (
-          <View style={styles.videoBox}>
-            <Text style={styles.videoLabel}>Video</Text>
-            <Text style={styles.videoUrl}>{post.videoUrl}</Text>
-          </View>
-        ) : null}
 
         {stickerStrokes.length ? (
           <View style={styles.stickerPreview}>
@@ -464,8 +575,7 @@ export default function HomeFeedScreen() {
           <View style={styles.commentsPanel}>
             {postComments.length ? (
               postComments.map((comment) => {
-                const commenterName =
-                  typeof comment.user === 'object' ? comment.user.username : 'PetConnect user';
+                const commenterName = comment.user?.username || 'PetConnect user';
 
                 return (
                   <View key={comment._id} style={styles.commentItem}>
@@ -542,22 +652,16 @@ export default function HomeFeedScreen() {
       </View>
 
       <View style={styles.tabRow}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'feed' && styles.tabActive]}
-          onPress={() => setActiveTab('feed')}
-        >
-          <Text style={[styles.tabText, activeTab === 'feed' && styles.tabTextActive]}>
-            Feed
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'my' && styles.tabActive]}
-          onPress={() => setActiveTab('my')}
-        >
-          <Text style={[styles.tabText, activeTab === 'my' && styles.tabTextActive]}>
-            My Posts
-          </Text>
-        </TouchableOpacity>
+        {[
+          ['combined', 'Combined'],
+          ['my', 'My Posts'],
+          ['friends', 'Friends Feed'],
+          ['groups', 'Groups Feed']
+        ].map(([value, label]) => (
+          <TouchableOpacity key={value} style={[styles.tab, activeTab === value && styles.tabActive]} onPress={() => setActiveTab(value)}>
+            <Text style={[styles.tabText, activeTab === value && styles.tabTextActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       {isSearchVisible ? (
@@ -631,8 +735,8 @@ export default function HomeFeedScreen() {
             multiline
           />
           <Text style={styles.label}>Photo</Text>
-          {form.imageUri ? (
-            <Image source={{ uri: form.imageUri }} style={styles.formImagePreview} />
+          {form.imageAsset?.uri || form.imageUrl ? (
+            <Image source={{ uri: form.imageAsset?.uri || form.imageUrl }} style={styles.formImagePreview} />
           ) : (
             <View style={styles.formImagePlaceholder}>
               <Text style={styles.formImagePlaceholderText}>No photo selected</Text>
@@ -642,10 +746,10 @@ export default function HomeFeedScreen() {
             <TouchableOpacity style={styles.photoButton} onPress={choosePhoto}>
               <Text style={styles.photoButtonText}>Choose Photo</Text>
             </TouchableOpacity>
-            {form.imageUri ? (
+            {form.imageAsset?.uri || form.imageUrl ? (
               <TouchableOpacity
                 style={styles.removePhotoButton}
-                onPress={() => updateFormField('imageUri', '')}
+                onPress={() => setForm((current) => ({ ...current, imageAsset: null, imageUrl: '', removeImage: true }))}
               >
                 <Text style={styles.removePhotoButtonText}>Remove</Text>
               </TouchableOpacity>
@@ -662,6 +766,8 @@ export default function HomeFeedScreen() {
           />
           <Text style={styles.label}>Group</Text>
           {renderGroupPicker(form.group, (value) => updateFormField('group', value))}
+          <Text style={styles.label}>Pet</Text>
+          {renderPetPicker(form.pet, (value) => updateFormField('pet', value))}
 
           {formError ? <Text style={styles.error}>{formError}</Text> : null}
 
@@ -688,9 +794,15 @@ export default function HomeFeedScreen() {
         </View>
       ) : displayedPosts.length === 0 ? (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>No posts yet</Text>
+          <Text style={styles.emptyTitle}>
+            {{ my: 'No posts from you yet', friends: 'No friend posts yet', groups: 'No group posts yet' }[activeTab] || 'No posts yet'}
+          </Text>
           <Text style={styles.emptyText}>
-            Join groups or publish a post to start filling your PetConnect feed.
+            {{
+              my: 'Create your first post to see it here.',
+              friends: 'Add accepted friends or wait for them to share a post.',
+              groups: 'Join a group with posts to build this feed.'
+            }[activeTab] || 'Join groups, add friends, or publish a post to fill your combined feed.'}
           </Text>
         </View>
       ) : (
@@ -1065,21 +1177,17 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%'
   },
-  videoBox: {
-    borderWidth: 1,
-    borderColor: '#d7e5dc',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    backgroundColor: '#fbfdfb'
+  videoErrorText: {
+    color: '#ffffff',
+    padding: 10,
+    textAlign: 'center'
   },
-  videoLabel: {
-    color: '#2f8f68',
-    fontWeight: '800',
-    marginBottom: 4
-  },
-  videoUrl: {
-    color: '#244536'
+  videoStatusOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(23, 59, 44, 0.72)'
   },
   stickerPreview: {
     backgroundColor: '#fbfdfb',

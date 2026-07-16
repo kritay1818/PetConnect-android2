@@ -21,6 +21,9 @@ import api from '../services/api';
 const COLORS = ['#2f8f68', '#173b2c', '#f2a65a', '#b3261e', '#4d78cc'];
 const CANVAS_WIDTH = Dimensions.get('window').width - 40;
 const CANVAS_HEIGHT = 320;
+const MAX_STROKES = 30;
+const MAX_POINTS_PER_STROKE = 500;
+const MAX_DRAWING_BYTES = 50000;
 
 const normalizePoint = (event) => {
   const { locationX, locationY } = event.nativeEvent;
@@ -33,10 +36,11 @@ const normalizePoint = (event) => {
 
 export default function MediaStudioScreen({ navigation }) {
   const videoRef = useRef(null);
+  const drawingEnabledRef = useRef(false);
   const [pets, setPets] = useState([]);
   const [selectedPetId, setSelectedPetId] = useState('');
   const [caption, setCaption] = useState('');
-  const [videoUri, setVideoUri] = useState('');
+  const [videoAsset, setVideoAsset] = useState(null);
   const [videoError, setVideoError] = useState('');
   const [publishError, setPublishError] = useState('');
   const [isPublishing, setIsPublishing] = useState(false);
@@ -68,7 +72,7 @@ export default function MediaStudioScreen({ navigation }) {
   }, [fetchPets]);
 
   const selectedPet = pets.find((pet) => pet._id === selectedPetId);
-  const selectedPetPhoto = selectedPet?.imageUri || selectedPet?.photoUrl || selectedPet?.imageUrl;
+  const selectedPetPhoto = selectedPet?.imageUrl;
 
   const panResponder = useMemo(
     () =>
@@ -79,6 +83,12 @@ export default function MediaStudioScreen({ navigation }) {
         onMoveShouldSetPanResponderCapture: () => true,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (event) => {
+          if (strokes.length >= MAX_STROKES) {
+            drawingEnabledRef.current = false;
+            setPublishError(`Drawing is limited to ${MAX_STROKES} strokes.`);
+            return;
+          }
+          drawingEnabledRef.current = true;
           setIsDrawing(true);
           const point = normalizePoint(event);
           setStrokes((current) => [
@@ -90,6 +100,7 @@ export default function MediaStudioScreen({ navigation }) {
           ]);
         },
         onPanResponderMove: (event) => {
+          if (!drawingEnabledRef.current) return;
           const point = normalizePoint(event);
           setStrokes((current) => {
             if (!current.length) {
@@ -98,6 +109,9 @@ export default function MediaStudioScreen({ navigation }) {
 
             const next = [...current];
             const lastStroke = next[next.length - 1];
+            if (lastStroke.points.length >= MAX_POINTS_PER_STROKE) {
+              return current;
+            }
             next[next.length - 1] = {
               ...lastStroke,
               points: [...lastStroke.points, point]
@@ -107,13 +121,15 @@ export default function MediaStudioScreen({ navigation }) {
           });
         },
         onPanResponderRelease: () => {
+          drawingEnabledRef.current = false;
           setIsDrawing(false);
         },
         onPanResponderTerminate: () => {
+          drawingEnabledRef.current = false;
           setIsDrawing(false);
         }
       }),
-    [activeColor]
+    [activeColor, strokes.length]
   );
 
   const handleChooseVideo = async () => {
@@ -136,7 +152,16 @@ export default function MediaStudioScreen({ navigation }) {
         return;
       }
 
-      setVideoUri(result.assets?.[0]?.uri || '');
+      const asset = result.assets?.[0];
+      if (asset?.fileSize && asset.fileSize > 25 * 1024 * 1024) {
+        setVideoError('Videos must be 25 MB or smaller.');
+        return;
+      }
+      if (asset?.mimeType && !['video/mp4', 'video/quicktime', 'video/webm'].includes(asset.mimeType)) {
+        setVideoError('Choose an MP4, MOV, or WebM video.');
+        return;
+      }
+      setVideoAsset(asset || null);
     } catch (error) {
       setVideoError('Could not open your video library.');
     }
@@ -155,8 +180,19 @@ export default function MediaStudioScreen({ navigation }) {
       return;
     }
 
-    if (!videoUri) {
+    if (!videoAsset?.uri) {
       setPublishError('Choose a video from your phone before publishing.');
+      return;
+    }
+
+
+    if (strokes.length > MAX_STROKES || strokes.some((stroke) => stroke.points.length > MAX_POINTS_PER_STROKE)) {
+      setPublishError('Drawing exceeds the allowed stroke or point limit.');
+      return;
+    }
+
+    if (JSON.stringify(strokes).length > MAX_DRAWING_BYTES) {
+      setPublishError('Drawing is too detailed. Clear it and try a simpler drawing.');
       return;
     }
 
@@ -164,17 +200,17 @@ export default function MediaStudioScreen({ navigation }) {
       setPublishError('');
       setIsPublishing(true);
 
-      const payload = {
-        content: trimmedCaption,
-        videoUri,
-        pet: selectedPetId
-      };
+      const payload = new FormData();
+      payload.append('content', trimmedCaption);
+      payload.append('pet', selectedPetId);
+      if (strokes.length) payload.append('stickerData', JSON.stringify(strokes));
+      payload.append('media', {
+        uri: videoAsset.uri,
+        name: videoAsset.fileName || `pet-video-${Date.now()}.mp4`,
+        type: videoAsset.mimeType || 'video/mp4'
+      });
 
-      if (strokes.length) {
-        payload.stickerData = strokes;
-      }
-
-      await api.post('/posts', payload);
+      await api.post('/posts', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
 
       Alert.alert('Post published', 'Your pet post was shared on PetConnect.', [
         {
@@ -272,13 +308,13 @@ export default function MediaStudioScreen({ navigation }) {
 
         <TouchableOpacity style={styles.primaryButton} onPress={handleChooseVideo}>
           <Text style={styles.primaryButtonText}>
-            {videoUri ? 'Choose Different Video' : 'Choose Video From Phone'}
+            {videoAsset ? 'Choose Different Video' : 'Choose Video From Phone'}
           </Text>
         </TouchableOpacity>
 
         {videoError ? <Text style={styles.error}>{videoError}</Text> : null}
 
-        {videoUri ? (
+        {videoAsset?.uri ? (
           <View style={styles.videoFrame}>
             {isVideoLoading ? (
               <View style={styles.videoLoading}>
@@ -288,7 +324,7 @@ export default function MediaStudioScreen({ navigation }) {
             ) : null}
             <Video
               ref={videoRef}
-              source={{ uri: videoUri }}
+              source={{ uri: videoAsset.uri }}
               style={styles.video}
               useNativeControls
               resizeMode={ResizeMode.CONTAIN}
@@ -431,7 +467,7 @@ export default function MediaStudioScreen({ navigation }) {
 
         <View style={styles.draftSummary}>
           <Text style={styles.draftSummaryText}>
-            Video: {videoUri ? 'selected from phone' : 'not added'}
+            Video: {videoAsset ? 'selected from phone' : 'not added'}
           </Text>
           <Text style={styles.draftSummaryText}>
             Sticker: {strokes.length ? `${strokes.length} stroke(s)` : 'not drawn yet'}

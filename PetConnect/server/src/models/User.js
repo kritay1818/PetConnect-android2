@@ -6,14 +6,17 @@ const userSchema = new mongoose.Schema(
     username: {
       type: String,
       required: [true, 'Username is required'],
-      trim: true
+      trim: true,
+      minlength: [2, 'Username must be at least 2 characters'],
+      maxlength: [50, 'Username cannot exceed 50 characters']
     },
     email: {
       type: String,
       required: [true, 'Email is required'],
       unique: true,
       lowercase: true,
-      trim: true
+      trim: true,
+      maxlength: [254, 'Email cannot exceed 254 characters']
     },
     password: {
       type: String,
@@ -61,5 +64,7 @@ userSchema.pre('save', async function hashPassword(next) {
 userSchema.methods.matchPassword = function matchPassword(enteredPassword) {
   return bcrypt.compare(enteredPassword, this.password);
 };
+
+userSchema.index({ username: 1 });
 
 module.exports = mongoose.model('User', userSchema);

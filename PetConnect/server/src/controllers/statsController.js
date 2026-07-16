@@ -2,6 +2,22 @@ const Pet = require('../models/Pet');
 const Post = require('../models/Post');
 const User = require('../models/User');
 const Group = require('../models/Group');
+const { escapeRegex } = require('../utils/security');
+
+const getVisiblePostMatch = async (userId) => {
+  const accessibleGroups = await Group.find({
+    $or: [{ isPrivate: false }, { admin: userId }, { members: userId }]
+  }).select('_id');
+  const accessibleGroupIds = accessibleGroups.map((group) => group._id);
+
+  return {
+    $or: [
+      { group: { $exists: false } },
+      { group: null },
+      { group: { $in: accessibleGroupIds } }
+    ]
+  };
+};
 
 const getRecentActivitySummary = ({ petsCount, postsCount, groupsCount, recentPosts }) => {
   const summary = [];
@@ -37,7 +53,7 @@ const findMostActivePet = (pets, posts) => {
   }
 
   const petCounts = pets.map((pet) => {
-    const pattern = new RegExp(`\\b${pet.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const pattern = new RegExp(`\\b${escapeRegex(pet.name)}\\b`, 'i');
     const count = posts.filter((post) => pattern.test(post.content)).length;
 
     return {
@@ -135,7 +151,9 @@ const getMyActivity = async (req, res, next) => {
 
 const getPostsPerMonth = async (req, res, next) => {
   try {
+    const visiblePostMatch = await getVisiblePostMatch(req.user._id);
     const stats = await Post.aggregate([
+      { $match: visiblePostMatch },
       {
         $group: {
           _id: {
@@ -164,10 +182,13 @@ const getPostsPerMonth = async (req, res, next) => {
 
 const getPostsPerGroup = async (req, res, next) => {
   try {
+    const visiblePostMatch = await getVisiblePostMatch(req.user._id);
+    const accessibleGroupIds = visiblePostMatch.$or[2].group.$in;
+
     const stats = await Post.aggregate([
       {
         $match: {
-          group: { $ne: null }
+          group: { $in: accessibleGroupIds }
         }
       },
       {

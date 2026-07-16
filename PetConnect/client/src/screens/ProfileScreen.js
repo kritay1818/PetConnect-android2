@@ -115,6 +115,8 @@ export default function ProfileScreen({ navigation }) {
   };
 
   const renderUserAction = (result) => {
+    const resultId = result._id || result.id;
+
     if (result.friendshipStatus === 'friends') {
       return <Text style={styles.statusText}>Friends</Text>;
     }
@@ -126,9 +128,9 @@ export default function ProfileScreen({ navigation }) {
     if (result.friendshipStatus === 'requestReceived') {
       return (
         <TouchableOpacity
-          style={[styles.smallButton, processingUserId === result.id && styles.disabledButton]}
-          disabled={processingUserId === result.id}
-          onPress={() => acceptRequest(result.id)}
+          style={[styles.smallButton, processingUserId === resultId && styles.disabledButton]}
+          disabled={processingUserId === resultId}
+          onPress={() => acceptRequest(resultId)}
         >
           <Text style={styles.smallButtonText}>Accept</Text>
         </TouchableOpacity>
@@ -137,9 +139,9 @@ export default function ProfileScreen({ navigation }) {
 
     return (
       <TouchableOpacity
-        style={[styles.smallButton, processingUserId === result.id && styles.disabledButton]}
-        disabled={processingUserId === result.id}
-        onPress={() => sendRequest(result.id)}
+        style={[styles.smallButton, processingUserId === resultId && styles.disabledButton]}
+        disabled={processingUserId === resultId}
+        onPress={() => sendRequest(resultId)}
       >
         <Text style={styles.smallButtonText}>Add Friend</Text>
       </TouchableOpacity>
@@ -190,7 +192,7 @@ export default function ProfileScreen({ navigation }) {
           <Text style={styles.emptyText}>No pet owners found yet.</Text>
         ) : (
           userResults.map((result) => (
-            <View key={result.id} style={styles.friendRow}>
+            <View key={result._id || result.id} style={styles.friendRow}>
               <View style={styles.friendInfo}>
                 <Text style={styles.friendName}>{result.username}</Text>
                 <Text style={styles.friendMeta}>{result.role}</Text>

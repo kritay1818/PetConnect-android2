@@ -9,6 +9,14 @@ const User = require('../models/User');
 
 dotenv.config();
 
+const DEMO_PASSWORD = 'password123';
+const monthsAgo = (months, day = 10) => {
+  const date = new Date();
+  date.setUTCMonth(date.getUTCMonth() - months, day);
+  date.setUTCHours(12, 0, 0, 0);
+  return date;
+};
+
 const connectDB = async () => {
   if (!process.env.MONGO_URI) {
     throw new Error('MONGO_URI is not defined');
@@ -27,57 +35,79 @@ const clearData = async () => {
   ]);
 };
 
-const createUsers = async () =>
-  User.create([
+const createUsers = async () => {
+  const users = await User.create([
     {
       username: 'Maya Cohen',
       email: 'maya@example.com',
-      password: 'password123',
+      password: DEMO_PASSWORD,
       role: 'groupAdmin'
     },
     {
       username: 'Noam Levy',
       email: 'noam@example.com',
-      password: 'password123',
+      password: DEMO_PASSWORD,
       role: 'groupAdmin'
     },
     {
       username: 'Dana Azulay',
       email: 'dana@example.com',
-      password: 'password123',
-      role: 'user'
+      password: DEMO_PASSWORD,
+      role: 'groupAdmin'
     },
     {
       username: 'Lior Ben-David',
       email: 'lior@example.com',
-      password: 'password123',
+      password: DEMO_PASSWORD,
       role: 'user'
     },
     {
       username: 'Tamar Katz',
       email: 'tamar@example.com',
-      password: 'password123',
+      password: DEMO_PASSWORD,
       role: 'groupAdmin'
     },
     {
       username: 'Ariel Romano',
       email: 'ariel@example.com',
-      password: 'password123',
-      role: 'user'
+      password: DEMO_PASSWORD,
+      role: 'groupAdmin'
     },
     {
       username: 'Shira Gold',
       email: 'shira@example.com',
-      password: 'password123',
+      password: DEMO_PASSWORD,
       role: 'user'
     },
     {
       username: 'Eitan Bar',
       email: 'eitan@example.com',
-      password: 'password123',
+      password: DEMO_PASSWORD,
       role: 'user'
     }
   ]);
+
+  const acceptedPairs = [[0, 2], [0, 3], [1, 5], [4, 6], [4, 7]];
+  acceptedPairs.forEach(([first, second]) => {
+    users[first].friends.push(users[second]._id);
+    users[second].friends.push(users[first]._id);
+  });
+
+  users[0].friendRequestsSent.push(users[1]._id);
+  users[1].friendRequestsReceived.push(users[0]._id);
+  users[3].friendRequestsSent.push(users[6]._id);
+  users[6].friendRequestsReceived.push(users[3]._id);
+
+  await Promise.all(users.map((user) => user.save()));
+  await User.collection.bulkWrite(users.map((user, index) => ({
+    updateOne: {
+      filter: { _id: user._id },
+      update: { $set: { createdAt: monthsAgo(index % 6, 2 + index) } }
+    }
+  })));
+
+  return users;
+};
 
 const createPets = async (users) =>
   Pet.create([
@@ -222,8 +252,8 @@ const createGroups = async (users) =>
     }
   ]);
 
-const createPosts = async (users, groups) =>
-  Post.create([
+const createPosts = async (users, groups, pets) => {
+  const posts = [
     {
       content: 'Bamba finally learned to wait before crossing the road. Tiny win, huge relief.',
       author: users[0]._id,
@@ -374,10 +404,18 @@ const createPosts = async (users, groups) =>
       likes: [users[5]._id, users[6]._id],
       comments: [{ user: users[6]._id, text: 'Senior pets are the sweetest.' }]
     }
-  ]);
+  ];
 
-const createMessages = async (users) =>
-  Message.create([
+  const petByPostIndex = { 0: 0, 2: 6, 4: 1, 6: 9, 12: 3, 15: 4, 16: 5, 18: 2, 19: 7, 21: 8 };
+  return Post.create(posts.map((post, index) => ({
+    ...post,
+    pet: petByPostIndex[index] === undefined ? undefined : pets[petByPostIndex[index]]._id,
+    createdAt: monthsAgo(index % 6, 4 + (index % 20))
+  })));
+};
+
+const createMessages = async (users) => {
+  const messages = [
     {
       sender: users[0]._id,
       receiver: users[2]._id,
@@ -417,20 +455,70 @@ const createMessages = async (users) =>
       sender: users[3]._id,
       receiver: users[0]._id,
       text: 'Luna may join the park meetup if it is not too crowded.'
+    },
+    {
+      sender: users[0]._id,
+      receiver: users[3]._id,
+      text: 'We will choose the quiet side of the park for Luna.'
+    },
+    {
+      sender: users[4]._id,
+      receiver: users[7]._id,
+      text: 'Thank you for finding those shelter blankets.'
+    },
+    {
+      sender: users[7]._id,
+      receiver: users[4]._id,
+      text: 'Happy to help. I can bring them tomorrow evening.'
+    },
+    {
+      sender: users[1]._id,
+      receiver: users[5]._id,
+      text: 'The clinic recommendation was excellent, thank you.'
+    },
+    {
+      sender: users[5]._id,
+      receiver: users[1]._id,
+      text: 'Glad it helped. Give Mitsi a scratch from me.'
+    },
+    {
+      sender: users[0]._id,
+      receiver: users[2]._id,
+      text: 'I posted the final route in the walkers group.'
+    },
+    {
+      sender: users[2]._id,
+      receiver: users[0]._id,
+      text: 'Perfect, see you Friday morning.'
+    },
+    {
+      sender: users[6]._id,
+      receiver: users[4]._id,
+      text: 'The foster post already has three shares.'
     }
-  ]);
+  ];
+
+  return Message.create(messages.map((message, index) => ({
+    ...message,
+    createdAt: new Date(Date.now() - (messages.length - index) * 6 * 60 * 60 * 1000)
+  })));
+};
 
 const importData = async () => {
   await connectDB();
   await clearData();
 
   const users = await createUsers();
-  await createPets(users);
+  const pets = await createPets(users);
   const groups = await createGroups(users);
-  await createPosts(users, groups);
+  await createPosts(users, groups, pets);
   await createMessages(users);
 
   console.log('Seed data imported successfully');
+  console.log('Demo credentials (development only):');
+  console.log('  maya@example.com / password123');
+  console.log('  dana@example.com / password123');
+  console.log('  noam@example.com / password123');
   await mongoose.connection.close();
   process.exit(0);
 };

@@ -1,36 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   View
 } from 'react-native';
-import { BarChart, LineChart } from 'react-native-chart-kit';
 
+import ActivityMixChart from '../components/charts/ActivityMixChart';
+import PostsPerMonthChart from '../components/charts/PostsPerMonthChart';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-
-const chartWidth = Dimensions.get('window').width - 40;
-
-const chartConfig = {
-  backgroundColor: '#ffffff',
-  backgroundGradientFrom: '#ffffff',
-  backgroundGradientTo: '#ffffff',
-  decimalPlaces: 0,
-  color: (opacity = 1) => `rgba(47, 143, 104, ${opacity})`,
-  labelColor: (opacity = 1) => `rgba(23, 59, 44, ${opacity})`,
-  propsForBackgroundLines: {
-    stroke: '#e6f2ea'
-  },
-  propsForDots: {
-    r: '4',
-    strokeWidth: '2',
-    stroke: '#2f8f68'
-  }
-};
 
 const defaultStats = {
   petsCount: 0,
@@ -46,11 +27,6 @@ const defaultStats = {
 const getErrorMessage = (error, fallback) =>
   error.response?.data?.message || fallback;
 
-const formatMonth = ({ year, month }) => {
-  const date = new Date(year, month - 1);
-  return date.toLocaleDateString(undefined, { month: 'short' });
-};
-
 const formatDate = (date) =>
   new Date(date).toLocaleDateString(undefined, {
     month: 'short',
@@ -58,7 +34,7 @@ const formatDate = (date) =>
     year: 'numeric'
   });
 
-const hasChartData = (data) => data.datasets[0].data.some((value) => value > 0);
+const hasPositiveValue = (values) => values.some((value) => Number(value) > 0);
 
 export default function StatisticsScreen() {
   const { user } = useAuth();
@@ -90,30 +66,18 @@ export default function StatisticsScreen() {
     fetchDashboard();
   }, [fetchDashboard]);
 
-  const postsPerMonthChart = useMemo(() => {
-    const labels = stats.postsPerMonth.map(formatMonth);
-    const values = stats.postsPerMonth.map((item) => item.count);
-
-    return {
-      labels: labels.length ? labels : ['No data'],
-      datasets: [{ data: values.length ? values : [0] }]
-    };
-  }, [stats.postsPerMonth]);
+  const postsPerMonthChart = useMemo(
+    () => (Array.isArray(stats.postsPerMonth) ? stats.postsPerMonth : []),
+    [stats.postsPerMonth]
+  );
 
   const activityMixChart = useMemo(
-    () => ({
-      labels: ['Pets', 'Posts', 'Groups', 'Likes'],
-      datasets: [
-        {
-          data: [
-            stats.petsCount,
-            stats.postsCount,
-            stats.groupsCount,
-            stats.totalLikesReceived
-          ]
-        }
-      ]
-    }),
+    () => [
+      { label: 'Pets', value: stats.petsCount },
+      { label: 'Posts', value: stats.postsCount },
+      { label: 'Groups', value: stats.groupsCount },
+      { label: 'Likes', value: stats.totalLikesReceived }
+    ],
     [stats.groupsCount, stats.petsCount, stats.postsCount, stats.totalLikesReceived]
   );
 
@@ -177,16 +141,8 @@ export default function StatisticsScreen() {
 
           <View style={styles.chartCard}>
             <Text style={styles.chartTitle}>Posts Created Per Month</Text>
-            {hasChartData(postsPerMonthChart) ? (
-              <LineChart
-                data={postsPerMonthChart}
-                width={chartWidth}
-                height={230}
-                chartConfig={chartConfig}
-                bezier
-                fromZero
-                style={styles.chart}
-              />
+            {hasPositiveValue(postsPerMonthChart.map((item) => item?.count)) ? (
+              <PostsPerMonthChart data={postsPerMonthChart} />
             ) : (
               <Text style={styles.emptyText}>
                 No monthly post activity yet. Create your first post to start the chart.
@@ -196,18 +152,8 @@ export default function StatisticsScreen() {
 
           <View style={styles.chartCard}>
             <Text style={styles.chartTitle}>My Activity Mix</Text>
-            {hasChartData(activityMixChart) ? (
-              <BarChart
-                data={activityMixChart}
-                width={chartWidth}
-                height={240}
-                chartConfig={chartConfig}
-                yAxisLabel=""
-                yAxisSuffix=""
-                fromZero
-                showValuesOnTopOfBars
-                style={styles.chart}
-              />
+            {hasPositiveValue(activityMixChart.map((item) => item.value)) ? (
+              <ActivityMixChart data={activityMixChart} />
             ) : (
               <Text style={styles.emptyText}>
                 Your pets, posts, groups, and likes chart will appear once you start
@@ -381,9 +327,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginBottom: 12,
     paddingHorizontal: 18
-  },
-  chart: {
-    borderRadius: 8
   },
   emptyText: {
     color: '#5f7569',

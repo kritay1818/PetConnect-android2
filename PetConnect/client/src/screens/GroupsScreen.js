@@ -34,6 +34,17 @@ const initialSearch = {
   isPrivate: ''
 };
 
+const initialManagerSearch = {
+  username: '',
+  status: '',
+  minPosts: '',
+  maxPosts: '',
+  startDate: '',
+  endDate: ''
+};
+
+const MAX_POST_FILTER = 1000000;
+
 const getErrorMessage = (error, fallback) =>
   error.response?.data?.message || fallback;
 
@@ -45,12 +56,27 @@ const getId = (value) => {
   return typeof value === 'string' ? value : value._id;
 };
 
+const isValidDateInput = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+
 export default function GroupsScreen() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('all');
   const [groups, setGroups] = useState([]);
   const [myGroups, setMyGroups] = useState([]);
   const [search, setSearch] = useState(initialSearch);
+  const [managerSearch, setManagerSearch] = useState(initialManagerSearch);
+  const [managerSearchGroupId, setManagerSearchGroupId] = useState('');
+  const [managerSearchResults, setManagerSearchResults] = useState([]);
+  const [isManagerSearchLoading, setIsManagerSearchLoading] = useState(false);
+  const [managerSearchError, setManagerSearchError] = useState('');
+  const [hasManagerSearched, setHasManagerSearched] = useState(false);
   const [form, setForm] = useState(initialForm);
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
@@ -63,11 +89,11 @@ export default function GroupsScreen() {
 
   const enrichAdminGroups = useCallback(
     async (groupsToCheck) => {
-      if (!user?.id) {
+      if (!user?._id) {
         return groupsToCheck;
       }
 
-      const adminGroups = groupsToCheck.filter((group) => getId(group.admin) === user.id);
+      const adminGroups = groupsToCheck.filter((group) => getId(group.admin) === user._id);
 
       if (!adminGroups.length) {
         return groupsToCheck;
@@ -88,7 +114,7 @@ export default function GroupsScreen() {
 
       return groupsToCheck.map((group) => detailedGroups[group._id] || group);
     },
-    [user?.id]
+    [user?._id]
   );
 
   const fetchGroups = useCallback(async ({ refreshing = false } = {}) => {
@@ -166,6 +192,14 @@ export default function GroupsScreen() {
       return 'Group name is required.';
     }
 
+    if (form.name.trim().length > 100) {
+      return 'Group name cannot exceed 100 characters.';
+    }
+
+    if (form.description.trim().length > 1000) {
+      return 'Group description cannot exceed 1000 characters.';
+    }
+
     if (!form.category.trim()) {
       return 'Category is required.';
     }
@@ -214,6 +248,11 @@ export default function GroupsScreen() {
   };
 
   const handleSearch = async () => {
+    if (search.name.trim().length > 100) {
+      setError('Group search cannot exceed 100 characters.');
+      return;
+    }
+
     try {
       setError('');
       setIsLoading(true);
@@ -243,6 +282,100 @@ export default function GroupsScreen() {
   const clearSearch = async () => {
     setSearch(initialSearch);
     await fetchGroups();
+  };
+
+  const resetManagerSearch = () => {
+    setManagerSearch(initialManagerSearch);
+    setManagerSearchResults([]);
+    setManagerSearchError('');
+    setHasManagerSearched(false);
+  };
+
+  const toggleManagerSearch = (groupId) => {
+    if (managerSearchGroupId === groupId) {
+      setManagerSearchGroupId('');
+      resetManagerSearch();
+      return;
+    }
+
+    setManagerSearchGroupId(groupId);
+    resetManagerSearch();
+  };
+
+  const updateManagerSearchField = (name, value) => {
+    setManagerSearchError('');
+    setManagerSearch((current) => ({ ...current, [name]: value }));
+  };
+
+  const validateManagerSearch = () => {
+    if (managerSearch.username.trim().length > 100) {
+      return 'Username cannot exceed 100 characters.';
+    }
+
+    for (const [field, label] of [['minPosts', 'Minimum posts'], ['maxPosts', 'Maximum posts']]) {
+      const value = managerSearch[field].trim();
+      if (value && (!/^\d+$/.test(value) || Number(value) > MAX_POST_FILTER)) {
+        return `${label} must be an integer between 0 and ${MAX_POST_FILTER}.`;
+      }
+    }
+
+    if (
+      managerSearch.minPosts &&
+      managerSearch.maxPosts &&
+      Number(managerSearch.maxPosts) < Number(managerSearch.minPosts)
+    ) {
+      return 'Maximum posts must be greater than or equal to minimum posts.';
+    }
+
+    if (managerSearch.startDate && !isValidDateInput(managerSearch.startDate)) {
+      return 'Start date must use YYYY-MM-DD.';
+    }
+
+    if (managerSearch.endDate && !isValidDateInput(managerSearch.endDate)) {
+      return 'End date must use YYYY-MM-DD.';
+    }
+
+    if (
+      managerSearch.startDate &&
+      managerSearch.endDate &&
+      managerSearch.endDate < managerSearch.startDate
+    ) {
+      return 'End date must be greater than or equal to start date.';
+    }
+
+    return '';
+  };
+
+  const searchManagedGroupMembers = async (groupId) => {
+    const validationMessage = validateManagerSearch();
+    if (validationMessage) {
+      setManagerSearchError(validationMessage);
+      return;
+    }
+
+    try {
+      setIsManagerSearchLoading(true);
+      setManagerSearchError('');
+      setHasManagerSearched(true);
+
+      const params = {};
+      Object.entries(managerSearch).forEach(([field, value]) => {
+        const normalizedValue = value.trim();
+        if (normalizedValue) {
+          params[field] = normalizedValue;
+        }
+      });
+
+      const { data } = await api.get(`/groups/${groupId}/members/search`, { params });
+      setManagerSearchResults(data.members || []);
+    } catch (searchError) {
+      setManagerSearchResults([]);
+      setManagerSearchError(
+        getErrorMessage(searchError, 'Could not search this group’s members.')
+      );
+    } finally {
+      setIsManagerSearchLoading(false);
+    }
   };
 
   const confirmDelete = (group) => {
@@ -316,11 +449,25 @@ export default function GroupsScreen() {
     }
   };
 
-  const isAdmin = (group) => getId(group.admin) === user?.id;
+  const removeMember = async (groupId, userId) => {
+    const requestKey = `${groupId}:${userId}:remove`;
+    try {
+      setProcessingRequestId(requestKey);
+      setError('');
+      await api.delete(`/groups/${groupId}/members/${userId}`);
+      await fetchGroups();
+    } catch (removeError) {
+      setError(getErrorMessage(removeError, 'Could not remove member.'));
+    } finally {
+      setProcessingRequestId('');
+    }
+  };
+
+  const isAdmin = (group) => getId(group.admin) === user?._id;
   const isMember = (group) =>
-    (group.members || []).some((member) => getId(member) === user?.id);
+    (group.members || []).some((member) => getId(member) === user?._id);
   const isPending = (group) =>
-    (group.pendingRequests || []).some((member) => getId(member) === user?.id);
+    (group.pendingRequests || []).some((member) => getId(member) === user?._id);
 
   const getRequestUserName = (requestUser) => {
     if (typeof requestUser === 'object') {
@@ -330,14 +477,158 @@ export default function GroupsScreen() {
     return requestUser || 'PetConnect user';
   };
 
+  const renderManagerSearch = (group) => (
+    <View style={styles.managerSearchPanel}>
+      <View style={styles.managerSearchHeader}>
+        <View style={styles.managerSearchHeading}>
+          <Text style={styles.requestsTitle}>Manager Member Search</Text>
+          <Text style={styles.requestMeta}>
+            Search accepted and pending users by activity in this group.
+          </Text>
+        </View>
+        <TouchableOpacity onPress={() => toggleManagerSearch(group._id)}>
+          <Text style={styles.cancelText}>Close</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.label}>Username</Text>
+      <TextInput
+        value={managerSearch.username}
+        onChangeText={(value) => updateManagerSearchField('username', value)}
+        placeholder="Search by username"
+        placeholderTextColor="#8a9b91"
+        style={styles.input}
+      />
+
+      <Text style={styles.label}>Membership status</Text>
+      <View style={styles.chipGrid}>
+        {[
+          { label: 'Any', value: '' },
+          { label: 'Member', value: 'member' },
+          { label: 'Pending', value: 'pending' }
+        ].map((option) => (
+          <TouchableOpacity
+            key={option.label}
+            style={[
+              styles.chip,
+              managerSearch.status === option.value && styles.chipActive
+            ]}
+            onPress={() => updateManagerSearchField('status', option.value)}
+          >
+            <Text
+              style={[
+                styles.chipText,
+                managerSearch.status === option.value && styles.chipTextActive
+              ]}
+            >
+              {option.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <View style={styles.managerFieldRow}>
+        <View style={styles.managerField}>
+          <Text style={styles.label}>Minimum posts</Text>
+          <TextInput
+            value={managerSearch.minPosts}
+            onChangeText={(value) => updateManagerSearchField('minPosts', value)}
+            placeholder="0"
+            placeholderTextColor="#8a9b91"
+            keyboardType="number-pad"
+            style={styles.input}
+          />
+        </View>
+        <View style={styles.managerField}>
+          <Text style={styles.label}>Maximum posts</Text>
+          <TextInput
+            value={managerSearch.maxPosts}
+            onChangeText={(value) => updateManagerSearchField('maxPosts', value)}
+            placeholder="Any"
+            placeholderTextColor="#8a9b91"
+            keyboardType="number-pad"
+            style={styles.input}
+          />
+        </View>
+      </View>
+
+      <View style={styles.managerFieldRow}>
+        <View style={styles.managerField}>
+          <Text style={styles.label}>Start date</Text>
+          <TextInput
+            value={managerSearch.startDate}
+            onChangeText={(value) => updateManagerSearchField('startDate', value)}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor="#8a9b91"
+            autoCapitalize="none"
+            style={styles.input}
+          />
+        </View>
+        <View style={styles.managerField}>
+          <Text style={styles.label}>End date</Text>
+          <TextInput
+            value={managerSearch.endDate}
+            onChangeText={(value) => updateManagerSearchField('endDate', value)}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor="#8a9b91"
+            autoCapitalize="none"
+            style={styles.input}
+          />
+        </View>
+      </View>
+
+      {managerSearchError ? <Text style={styles.managerError}>{managerSearchError}</Text> : null}
+
+      <View style={styles.searchActions}>
+        <TouchableOpacity
+          style={[styles.searchButton, isManagerSearchLoading && styles.disabledButton]}
+          onPress={() => searchManagedGroupMembers(group._id)}
+          disabled={isManagerSearchLoading}
+        >
+          <Text style={styles.searchButtonText}>
+            {isManagerSearchLoading ? 'Searching...' : 'Search Members'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.clearButton}
+          onPress={resetManagerSearch}
+          disabled={isManagerSearchLoading}
+        >
+          <Text style={styles.clearButtonText}>Clear</Text>
+        </TouchableOpacity>
+      </View>
+
+      {isManagerSearchLoading ? (
+        <View style={styles.managerLoadingRow}>
+          <ActivityIndicator color="#2f8f68" />
+          <Text style={styles.requestMeta}>Calculating group activity...</Text>
+        </View>
+      ) : hasManagerSearched && managerSearchResults.length === 0 && !managerSearchError ? (
+        <Text style={styles.managerEmptyText}>No users match these filters.</Text>
+      ) : (
+        managerSearchResults.map((result) => (
+          <View key={result._id} style={styles.managerResultRow}>
+            <View>
+              <Text style={styles.requestName}>{result.username}</Text>
+              <Text style={styles.requestMeta}>{result.status}</Text>
+            </View>
+            <Text style={styles.managerPostCount}>
+              {result.postCount} post{result.postCount === 1 ? '' : 's'}
+            </Text>
+          </View>
+        ))
+      )}
+    </View>
+  );
+
   const renderGroupCard = (group) => {
-    const adminName =
-      typeof group.admin === 'object' ? group.admin.username : 'Unknown admin';
+    const adminName = group.admin?.username || 'Unknown admin';
     const membersCount = group.members?.length || 0;
     const pendingRequests = group.pendingRequests || [];
     const currentUserIsAdmin = isAdmin(group);
     const currentUserIsMember = isMember(group);
     const currentUserIsPending = isPending(group);
+    const hasFullDetails = !group.isPrivate || currentUserIsAdmin || currentUserIsMember;
 
     return (
       <View key={group._id} style={styles.groupCard}>
@@ -354,6 +645,9 @@ export default function GroupsScreen() {
 
           {currentUserIsAdmin ? (
             <View style={styles.actions}>
+              <TouchableOpacity onPress={() => toggleManagerSearch(group._id)}>
+                <Text style={styles.managerSearchText}>Member Search</Text>
+              </TouchableOpacity>
               <TouchableOpacity onPress={() => openEditForm(group)}>
                 <Text style={styles.editText}>Edit</Text>
               </TouchableOpacity>
@@ -368,10 +662,14 @@ export default function GroupsScreen() {
           <Text style={styles.description}>{group.description}</Text>
         ) : null}
 
-        <View style={styles.details}>
-          <Text style={styles.detailText}>Admin: {adminName}</Text>
-          <Text style={styles.detailText}>Members: {membersCount}</Text>
-        </View>
+        {hasFullDetails ? (
+          <View style={styles.details}>
+            <Text style={styles.detailText}>Admin: {adminName}</Text>
+            <Text style={styles.detailText}>Members: {membersCount}</Text>
+          </View>
+        ) : (
+          <Text style={styles.detailText}>Private details are visible after approval.</Text>
+        )}
 
         {currentUserIsAdmin ? (
           <View style={styles.requestsPanel}>
@@ -427,6 +725,34 @@ export default function GroupsScreen() {
             )}
           </View>
         ) : null}
+
+        {currentUserIsAdmin && (group.members || []).length > 1 ? (
+          <View style={styles.requestsPanel}>
+            <Text style={styles.requestsTitle}>Manage Members</Text>
+            {(group.members || []).filter((member) => getId(member) !== user?._id).map((member) => {
+              const memberId = getId(member);
+              const requestKey = `${group._id}:${memberId}:remove`;
+              return (
+                <View key={memberId} style={styles.requestRow}>
+                  <Text style={styles.requestName}>{getRequestUserName(member)}</Text>
+                  <TouchableOpacity
+                    style={[styles.rejectButton, processingRequestId === requestKey && styles.disabledButton]}
+                    onPress={() => removeMember(group._id, memberId)}
+                    disabled={processingRequestId === requestKey}
+                  >
+                    <Text style={styles.rejectButtonText}>
+                      {processingRequestId === requestKey ? 'Removing...' : 'Remove'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+
+        {currentUserIsAdmin && managerSearchGroupId === group._id
+          ? renderManagerSearch(group)
+          : null}
 
         {!currentUserIsAdmin && !currentUserIsMember && !currentUserIsPending ? (
           <TouchableOpacity
@@ -971,6 +1297,10 @@ const styles = StyleSheet.create({
     color: '#2f8f68',
     fontWeight: '800'
   },
+  managerSearchText: {
+    color: '#2f8f68',
+    fontWeight: '800'
+  },
   deleteText: {
     color: '#b3261e',
     fontWeight: '800'
@@ -1047,6 +1377,59 @@ const styles = StyleSheet.create({
   noRequestsText: {
     color: '#5f7569',
     lineHeight: 20
+  },
+  managerSearchPanel: {
+    backgroundColor: '#f4faf6',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cfe2d6',
+    padding: 12,
+    marginBottom: 12
+  },
+  managerSearchHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12
+  },
+  managerSearchHeading: {
+    flex: 1
+  },
+  managerFieldRow: {
+    flexDirection: 'row',
+    gap: 10
+  },
+  managerField: {
+    flex: 1
+  },
+  managerError: {
+    color: '#b3261e',
+    lineHeight: 20,
+    marginTop: 12
+  },
+  managerLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14
+  },
+  managerEmptyText: {
+    color: '#5f7569',
+    lineHeight: 20,
+    marginTop: 14
+  },
+  managerResultRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#dcebe1',
+    paddingTop: 10,
+    marginTop: 10
+  },
+  managerPostCount: {
+    color: '#2f8f68',
+    fontWeight: '800'
   },
   joinButton: {
     backgroundColor: '#2f8f68',

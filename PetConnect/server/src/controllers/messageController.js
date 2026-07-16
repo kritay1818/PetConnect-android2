@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const Message = require('../models/Message');
 const User = require('../models/User');
+const { PUBLIC_USER_FIELDS } = require('../utils/security');
 
 const ensureValidObjectId = (id, res, label = 'ObjectId') => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -18,28 +19,28 @@ const ensureValidReceiver = async (receiverId, senderId, res) => {
     throw new Error('User cannot send message to himself');
   }
 
-  const receiver = await User.findById(receiverId);
+  const [receiver, sender] = await Promise.all([
+    User.findById(receiverId),
+    User.findById(senderId).select('friends')
+  ]);
   if (!receiver) {
     res.status(404);
     throw new Error('Receiver not found');
+  }
+
+  const isFriend = sender?.friends.some(
+    (friendId) => friendId.toString() === receiverId.toString()
+  );
+  if (!isFriend) {
+    res.status(403);
+    throw new Error('Messages are only allowed between accepted friends');
   }
 };
 
 const populateMessage = (query) =>
   query
-    .populate('sender', 'username email')
-    .populate('receiver', 'username email');
-
-const emitMessage = (req, message) => {
-  const io = req.app.get('io');
-
-  if (!io) {
-    return;
-  }
-
-  io.to(message.sender._id.toString()).emit('receiveMessage', message);
-  io.to(message.receiver._id.toString()).emit('receiveMessage', message);
-};
+    .populate('sender', PUBLIC_USER_FIELDS)
+    .populate('receiver', PUBLIC_USER_FIELDS);
 
 const createMessage = async ({ senderId, receiverId, text }) => {
   const message = await Message.create({
@@ -51,35 +52,11 @@ const createMessage = async ({ senderId, receiverId, text }) => {
   return populateMessage(Message.findById(message._id));
 };
 
-const sendMessage = async (req, res, next) => {
-  try {
-    const { receiver, text } = req.body;
-
-    await ensureValidReceiver(receiver, req.user._id, res);
-
-    const message = await createMessage({
-      senderId: req.user._id,
-      receiverId: receiver,
-      text
-    });
-
-    emitMessage(req, message);
-
-    res.status(201).json({ message });
-  } catch (error) {
-    next(error);
-  }
-};
-
 const getConversation = async (req, res, next) => {
   try {
     ensureValidObjectId(req.params.userId, res, 'user id');
 
-    const otherUser = await User.findById(req.params.userId);
-    if (!otherUser) {
-      res.status(404);
-      throw new Error('User not found');
-    }
+    await ensureValidReceiver(req.params.userId, req.user._id, res);
 
     const messages = await populateMessage(
       Message.find({
@@ -98,11 +75,16 @@ const getConversation = async (req, res, next) => {
 
 const getMyConversations = async (req, res, next) => {
   try {
+    const currentUser = await User.findById(req.user._id).select('friends');
+    const friendIds = currentUser?.friends || [];
     const messages = await Message.find({
-      $or: [{ sender: req.user._id }, { receiver: req.user._id }]
+      $or: [
+        { sender: req.user._id, receiver: { $in: friendIds } },
+        { receiver: req.user._id, sender: { $in: friendIds } }
+      ]
     })
-      .populate('sender', 'username email')
-      .populate('receiver', 'username email')
+      .populate('sender', PUBLIC_USER_FIELDS)
+      .populate('receiver', PUBLIC_USER_FIELDS)
       .sort({ createdAt: -1 });
 
     const conversationMap = new Map();
@@ -132,7 +114,6 @@ const getMyConversations = async (req, res, next) => {
 };
 
 module.exports = {
-  sendMessage,
   getConversation,
   getMyConversations,
   createMessage,

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-import api, { setAuthToken } from '../services/api';
+import api, { setAuthToken, setUnauthorizedHandler } from '../services/api';
 
 const TOKEN_KEY = 'petconnect_token';
 const USER_KEY = 'petconnect_user';
@@ -14,19 +14,36 @@ export const AuthProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState('');
 
+  const clearSession = async () => {
+    setUser(null);
+    setToken(null);
+    setAuthToken(null);
+    await AsyncStorage.multiRemove([TOKEN_KEY, USER_KEY]);
+  };
+
+  useEffect(() => {
+    setUnauthorizedHandler(clearSession);
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
   useEffect(() => {
     const restoreSession = async () => {
       try {
         const storedToken = await AsyncStorage.getItem(TOKEN_KEY);
         const storedUser = await AsyncStorage.getItem(USER_KEY);
 
-        if (storedToken && storedUser) {
-          setToken(storedToken);
+        if (storedToken) {
           setAuthToken(storedToken);
-          setUser(JSON.parse(storedUser));
+          const { data } = await api.get('/auth/me');
+          const restoredUser = data.user;
+          setToken(storedToken);
+          setUser(restoredUser);
+          await AsyncStorage.setItem(USER_KEY, JSON.stringify(restoredUser));
+        } else if (storedUser) {
+          await clearSession();
         }
       } catch (error) {
-        await AsyncStorage.multiRemove([TOKEN_KEY, USER_KEY]);
+        await clearSession();
       } finally {
         setIsLoading(false);
       }
@@ -62,10 +79,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    setUser(null);
-    setToken(null);
-    setAuthToken(null);
-    await AsyncStorage.multiRemove([TOKEN_KEY, USER_KEY]);
+    await clearSession();
   };
 
   const value = useMemo(

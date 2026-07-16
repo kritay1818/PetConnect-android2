@@ -15,10 +15,14 @@ const messageSchema = new mongoose.Schema(
     text: {
       type: String,
       required: [true, 'Message text is required'],
-      trim: true
+      trim: true,
+      maxlength: [2000, 'Message cannot exceed 2000 characters']
     }
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
+
+messageSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
+messageSchema.index({ receiver: 1, sender: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Message', messageSchema);

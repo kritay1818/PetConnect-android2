@@ -11,6 +11,7 @@ const {
   approveMember,
   rejectMember,
   removeMember,
+  searchGroupMembers,
   searchGroups
 } = require('../controllers/groupController');
 const { protect } = require('../middleware/authMiddleware');
@@ -18,23 +19,36 @@ const {
   validateCreateGroup,
   validateUpdateGroup,
   validateSearchGroups,
+  validateManagerMemberSearch,
+  rejectGroupFields,
+  rejectGroupSearchFields,
+  rejectManagerMemberSearchFields,
   handleValidationErrors
 } = require('../validators/groupValidators');
+const { mongoIdParam } = require('../validators/commonValidators');
 
 const router = express.Router();
 
 router.use(protect);
 
-router.post('/', validateCreateGroup, handleValidationErrors, createGroup);
+router.post('/', rejectGroupFields, validateCreateGroup, handleValidationErrors, createGroup);
 router.get('/', getGroups);
 router.get('/my', getMyGroups);
-router.get('/search', validateSearchGroups, handleValidationErrors, searchGroups);
-router.get('/:id', getGroupById);
-router.put('/:id', validateUpdateGroup, handleValidationErrors, updateGroup);
-router.delete('/:id', deleteGroup);
-router.post('/:id/join', joinGroup);
-router.post('/:id/approve/:userId', approveMember);
-router.post('/:id/reject/:userId', rejectMember);
-router.delete('/:id/members/:userId', removeMember);
+router.get('/search', rejectGroupSearchFields, validateSearchGroups, handleValidationErrors, searchGroups);
+router.get(
+  '/:id/members/search',
+  mongoIdParam('id', 'group id'),
+  rejectManagerMemberSearchFields,
+  validateManagerMemberSearch,
+  handleValidationErrors,
+  searchGroupMembers
+);
+router.get('/:id', mongoIdParam('id', 'group id'), handleValidationErrors, getGroupById);
+router.put('/:id', mongoIdParam('id', 'group id'), rejectGroupFields, validateUpdateGroup, handleValidationErrors, updateGroup);
+router.delete('/:id', mongoIdParam('id', 'group id'), handleValidationErrors, deleteGroup);
+router.post('/:id/join', mongoIdParam('id', 'group id'), handleValidationErrors, joinGroup);
+router.post('/:id/approve/:userId', mongoIdParam('id', 'group id'), mongoIdParam('userId', 'user id'), handleValidationErrors, approveMember);
+router.post('/:id/reject/:userId', mongoIdParam('id', 'group id'), mongoIdParam('userId', 'user id'), handleValidationErrors, rejectMember);
+router.delete('/:id/members/:userId', mongoIdParam('id', 'group id'), mongoIdParam('userId', 'user id'), handleValidationErrors, removeMember);
 
 module.exports = router;

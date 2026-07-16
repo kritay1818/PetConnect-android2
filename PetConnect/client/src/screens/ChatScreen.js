@@ -12,9 +12,7 @@ import {
 import { io } from 'socket.io-client';
 
 import { useAuth } from '../context/AuthContext';
-import api, { API_URL } from '../services/api';
-
-const SOCKET_URL = API_URL.replace(/\/api\/?$/, '');
+import api, { SOCKET_URL } from '../services/api';
 
 const getErrorMessage = (error, fallback) =>
   error.response?.data?.message || error.message || fallback;
@@ -43,6 +41,10 @@ export default function ChatScreen() {
   const socketRef = useRef(null);
   const selectedUserIdRef = useRef(null);
   const [conversations, setConversations] = useState([]);
+  const [friends, setFriends] = useState([]);
+  const [friendSearch, setFriendSearch] = useState('');
+  const [isChoosingFriend, setIsChoosingFriend] = useState(false);
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState('');
@@ -77,6 +79,15 @@ export default function ChatScreen() {
     }
   }, []);
 
+  const fetchFriends = useCallback(async () => {
+    try {
+      const { data } = await api.get('/friends');
+      setFriends(data.friends || []);
+    } catch (friendsError) {
+      setError(getErrorMessage(friendsError, 'Could not load friends.'));
+    }
+  }, []);
+
   const fetchConversation = useCallback(async (userId) => {
     if (!userId) {
       setMessages([]);
@@ -97,7 +108,8 @@ export default function ChatScreen() {
 
   useEffect(() => {
     fetchConversations();
-  }, [fetchConversations]);
+    fetchFriends();
+  }, [fetchConversations, fetchFriends]);
 
   useEffect(() => {
     if (!token) {
@@ -109,6 +121,14 @@ export default function ChatScreen() {
     });
 
     socketRef.current = socket;
+
+    socket.on('connect', () => {
+      setIsSocketConnected(true);
+      fetchConversations();
+      if (selectedUserIdRef.current) fetchConversation(selectedUserIdRef.current);
+    });
+
+    socket.on('disconnect', () => setIsSocketConnected(false));
 
     socket.on('connect_error', (socketError) => {
       setError(socketError.message || 'Socket connection failed.');
@@ -122,7 +142,7 @@ export default function ChatScreen() {
 
       const senderId = getId(message.sender);
       const receiverId = getId(message.receiver);
-      const currentUserId = user?.id;
+      const currentUserId = user?._id;
       const activeConversationId = selectedUserIdRef.current;
 
       if (
@@ -144,10 +164,11 @@ export default function ChatScreen() {
     });
 
     return () => {
+      socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [fetchConversations, token, user?.id]);
+  }, [fetchConversation, fetchConversations, token, user?._id]);
 
   const sortedMessages = useMemo(
     () =>
@@ -159,7 +180,14 @@ export default function ChatScreen() {
 
   const selectConversation = (conversation) => {
     setSelectedUser(conversation.user);
+    setIsChoosingFriend(false);
     fetchConversation(conversation.user._id);
+  };
+
+  const selectFriend = (friend) => {
+    setSelectedUser(friend);
+    setIsChoosingFriend(false);
+    fetchConversation(friend._id);
   };
 
   const sendMessage = async () => {
@@ -175,15 +203,32 @@ export default function ChatScreen() {
       return;
     }
 
+    if (text.length > 2000) {
+      setError('Messages cannot exceed 2000 characters.');
+      return;
+    }
+
     try {
       setError('');
       setIsSending(true);
-      await api.post('/messages', {
-        receiver: selectedUserId,
-        text
+      const socket = socketRef.current;
+      if (!socket?.connected) throw new Error('Chat is reconnecting. Please try again.');
+
+      const result = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Message delivery timed out.')), 10000);
+        socket.emit('sendMessage', { receiver: selectedUserId, text }, (acknowledgement) => {
+          clearTimeout(timeout);
+          if (!acknowledgement?.ok) {
+            reject(new Error(acknowledgement?.error || 'Could not send message.'));
+            return;
+          }
+          resolve(acknowledgement.message);
+        });
       });
+      setMessages((current) => current.some((item) => item._id === result._id)
+        ? current
+        : [...current, result]);
       setMessageText('');
-      await fetchConversation(selectedUserId);
       await fetchConversations();
     } catch (sendError) {
       setError(getErrorMessage(sendError, 'Could not send message.'));
@@ -191,6 +236,10 @@ export default function ChatScreen() {
       setIsSending(false);
     }
   };
+
+  const filteredFriends = friends.filter((friend) =>
+    friend.username?.toLowerCase().includes(friendSearch.trim().toLowerCase())
+  );
 
   const renderConversation = (conversation) => {
     const isActive = selectedUserId === conversation.user._id;
@@ -217,7 +266,7 @@ export default function ChatScreen() {
   };
 
   const renderMessage = (message) => {
-    const isMine = getId(message.sender) === user?.id;
+    const isMine = getId(message.sender) === user?._id;
 
     return (
       <View
@@ -261,7 +310,33 @@ export default function ChatScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Conversations</Text>
+          <View style={styles.sectionHeadingRow}>
+            <Text style={styles.sectionTitle}>Conversations</Text>
+            <TouchableOpacity style={styles.sendButton} onPress={() => setIsChoosingFriend((value) => !value)}>
+              <Text style={styles.sendButtonText}>New Conversation</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.connectionText}>
+            {isSocketConnected ? 'Realtime connected' : 'Realtime reconnecting...'}
+          </Text>
+          {isChoosingFriend ? (
+            <View style={styles.emptyCard}>
+              <TextInput
+                value={friendSearch}
+                onChangeText={setFriendSearch}
+                placeholder="Search accepted friends"
+                placeholderTextColor="#8a9b91"
+                style={styles.messageInput}
+              />
+              <View style={styles.conversationList}>
+                {filteredFriends.length ? filteredFriends.map((friend) => (
+                  <TouchableOpacity key={friend._id} style={styles.conversationCard} onPress={() => selectFriend(friend)}>
+                    <Text style={styles.conversationName}>{friend.username}</Text>
+                  </TouchableOpacity>
+                )) : <Text style={styles.emptyText}>No accepted friends found.</Text>}
+              </View>
+            </View>
+          ) : null}
           {isLoadingConversations ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator size="large" color="#2f8f68" />
@@ -380,6 +455,17 @@ const styles = StyleSheet.create({
     color: '#173b2c',
     fontSize: 20,
     fontWeight: '800',
+    marginBottom: 10
+  },
+  sectionHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12
+  },
+  connectionText: {
+    color: '#5f7569',
+    fontSize: 12,
     marginBottom: 10
   },
   loadingBox: {
@@ -515,6 +601,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2f8f68',
     borderRadius: 8,
     paddingHorizontal: 18,
+    paddingVertical: 10,
     justifyContent: 'center',
     alignItems: 'center'
   },

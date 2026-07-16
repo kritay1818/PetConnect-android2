@@ -10,7 +10,8 @@ const commentSchema = new mongoose.Schema(
     text: {
       type: String,
       required: [true, 'Comment text is required'],
-      trim: true
+      trim: true,
+      maxlength: [2000, 'Comment cannot exceed 2000 characters']
     },
     createdAt: {
       type: Date,
@@ -25,27 +26,18 @@ const postSchema = new mongoose.Schema(
     content: {
       type: String,
       required: [true, 'Post content is required'],
-      trim: true
+      trim: true,
+      maxlength: [5000, 'Post content cannot exceed 5000 characters']
     },
     imageUrl: {
       type: String,
-      trim: true
-    },
-    imageUri: {
-      type: String,
-      trim: true
-    },
-    photoUrl: {
-      type: String,
-      trim: true
+      trim: true,
+      maxlength: [4096, 'imageUrl cannot exceed 4096 characters']
     },
     videoUrl: {
       type: String,
-      trim: true
-    },
-    videoUri: {
-      type: String,
-      trim: true
+      trim: true,
+      maxlength: [4096, 'videoUrl cannot exceed 4096 characters']
     },
     stickerData: {
       type: mongoose.Schema.Types.Mixed
@@ -73,5 +65,8 @@ const postSchema = new mongoose.Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
+
+postSchema.index({ author: 1, createdAt: -1 });
+postSchema.index({ group: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Post', postSchema);

@@ -1,12 +1,21 @@
-const { body, query, validationResult } = require('express-validator');
+const { body, query } = require('express-validator');
+const {
+  rejectUnknownFields,
+  rejectUnknownQuery,
+  requireAtLeastOneField,
+  handleValidationErrors
+} = require('./commonValidators');
 
 const petTypes = ['dog', 'cat', 'bird', 'rabbit', 'other'];
+const petFields = ['name', 'type', 'breed', 'age', 'city', 'bio', 'imageUrl', 'removeImage'];
 
 const validateCreatePet = [
   body('name')
     .trim()
     .notEmpty()
-    .withMessage('Pet name is required'),
+    .withMessage('Pet name is required')
+    .isLength({ max: 100 })
+    .withMessage('Pet name cannot exceed 100 characters'),
   body('type')
     .trim()
     .notEmpty()
@@ -15,7 +24,8 @@ const validateCreatePet = [
     .withMessage('Pet type must be dog, cat, bird, rabbit, or other'),
   body('breed')
     .optional()
-    .trim(),
+    .trim()
+    .isLength({ max: 100 }),
   body('age')
     .optional()
     .isNumeric()
@@ -24,23 +34,18 @@ const validateCreatePet = [
     .withMessage('Age cannot be negative'),
   body('city')
     .optional()
-    .trim(),
+    .trim()
+    .isLength({ max: 100 }),
   body('bio')
     .optional()
-    .trim(),
+    .trim()
+    .isLength({ max: 1000 }),
   body('imageUrl')
     .optional({ checkFalsy: true })
     .trim()
     .isURL()
     .withMessage('imageUrl must be a valid URL'),
-  body('imageUri')
-    .optional({ checkFalsy: true })
-    .trim(),
-  body('photoUrl')
-    .optional({ checkFalsy: true })
-    .trim()
-    .isURL()
-    .withMessage('photoUrl must be a valid URL')
+  body('removeImage').optional().isBoolean().toBoolean()
 ];
 
 const validateUpdatePet = [
@@ -48,7 +53,8 @@ const validateUpdatePet = [
     .optional()
     .trim()
     .notEmpty()
-    .withMessage('Pet name cannot be empty'),
+    .withMessage('Pet name cannot be empty')
+    .isLength({ max: 100 }),
   body('type')
     .optional()
     .trim()
@@ -74,14 +80,7 @@ const validateUpdatePet = [
     .trim()
     .isURL()
     .withMessage('imageUrl must be a valid URL'),
-  body('imageUri')
-    .optional({ checkFalsy: true })
-    .trim(),
-  body('photoUrl')
-    .optional({ checkFalsy: true })
-    .trim()
-    .isURL()
-    .withMessage('photoUrl must be a valid URL')
+  body('removeImage').optional().isBoolean().toBoolean()
 ];
 
 const validateSearchPets = [
@@ -92,10 +91,14 @@ const validateSearchPets = [
     .withMessage('Pet type must be dog, cat, bird, rabbit, or other'),
   query('breed')
     .optional()
-    .trim(),
+    .isString()
+    .trim()
+    .isLength({ max: 100 }),
   query('city')
     .optional()
-    .trim(),
+    .isString()
+    .trim()
+    .isLength({ max: 100 }),
   query('minAge')
     .optional()
     .isFloat({ min: 0 })
@@ -117,20 +120,11 @@ const validateSearchPets = [
   })
 ];
 
-const handleValidationErrors = (req, res, next) => {
-  const errors = validationResult(req);
-
-  if (errors.isEmpty()) {
-    return next();
-  }
-
-  res.status(400);
-  return next(new Error(errors.array().map((error) => error.msg).join(', ')));
-};
-
 module.exports = {
   validateCreatePet,
-  validateUpdatePet,
+  validateUpdatePet: [requireAtLeastOneField(petFields), ...validateUpdatePet],
   validateSearchPets,
+  rejectPetFields: rejectUnknownFields(petFields),
+  rejectPetSearchFields: rejectUnknownQuery(['type', 'breed', 'city', 'minAge', 'maxAge']),
   handleValidationErrors
 };

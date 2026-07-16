@@ -5,11 +5,13 @@ const groupSchema = new mongoose.Schema(
     name: {
       type: String,
       required: [true, 'Group name is required'],
-      trim: true
+      trim: true,
+      maxlength: [100, 'Group name cannot exceed 100 characters']
     },
     description: {
       type: String,
-      trim: true
+      trim: true,
+      maxlength: [1000, 'Group description cannot exceed 1000 characters']
     },
     category: {
       type: String,
@@ -42,5 +44,8 @@ const groupSchema = new mongoose.Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
+
+groupSchema.index({ isPrivate: 1, category: 1, createdAt: -1 });
+groupSchema.index({ members: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Group', groupSchema);

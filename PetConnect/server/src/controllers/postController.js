@@ -4,6 +4,25 @@ const Group = require('../models/Group');
 const Pet = require('../models/Pet');
 const Post = require('../models/Post');
 const User = require('../models/User');
+const { escapeRegex, PUBLIC_USER_FIELDS } = require('../utils/security');
+const { buildMediaUrl, removeLocalMediaByUrl } = require('../utils/mediaFiles');
+
+const parseStickerData = (value, res) => {
+  if (!value || typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    res.status(400);
+    throw new Error('stickerData must be valid JSON');
+  }
+};
+
+const ensurePostUpload = (req, res) => {
+  if (req.file?.mimetype.startsWith('image/') && req.file.size > 10 * 1024 * 1024) {
+    res.status(413);
+    throw new Error('Post images must be 10 MB or smaller');
+  }
+};
 
 const ensureValidObjectId = (id, res, label = 'ObjectId') => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -45,11 +64,11 @@ const getVisiblePostFilter = async (userId, baseFilters = {}) => {
 
 const populatePost = (query) =>
   query
-    .populate('author', 'username email')
-    .populate('group', 'name category isPrivate')
-    .populate('pet', 'name type breed imageUrl imageUri photoUrl')
-    .populate('likes', 'username email')
-    .populate('comments.user', 'username email');
+    .populate('author', PUBLIC_USER_FIELDS)
+    .populate('group', 'name category isPrivate admin')
+    .populate('pet', 'name type breed imageUrl')
+    .populate('likes', PUBLIC_USER_FIELDS)
+    .populate('comments.user', PUBLIC_USER_FIELDS);
 
 const findPostById = async (id, res) => {
   ensureValidObjectId(id, res, 'post id');
@@ -66,8 +85,24 @@ const findPostById = async (id, res) => {
 const ensureAuthor = (post, userId, res) => {
   if (post.author.toString() !== userId.toString()) {
     res.status(403);
-    throw new Error('Only the author can edit or delete this post');
+    throw new Error('Only the author can edit this post');
   }
+};
+
+const ensureCanDeletePost = async (post, userId, res) => {
+  if (post.author.toString() === userId.toString()) {
+    return;
+  }
+
+  if (post.group) {
+    const group = await Group.findById(post.group).select('admin');
+    if (group?.admin.toString() === userId.toString()) {
+      return;
+    }
+  }
+
+  res.status(403);
+  throw new Error('Only the author or group admin can delete this post');
 };
 
 const ensureGroupExists = async (groupId, res, userId) => {
@@ -129,19 +164,20 @@ const ensurePetExists = async (petId, userId, res) => {
 
 const createPost = async (req, res, next) => {
   try {
-    await ensureGroupExists(req.body.group, res, req.user._id);
-    await ensurePetExists(req.body.pet, req.user._id, res);
+    ensurePostUpload(req, res);
+    const groupId = req.body.group || null;
+    const petId = req.body.pet || null;
+    await ensureGroupExists(groupId, res, req.user._id);
+    await ensurePetExists(petId, req.user._id, res);
 
+    const uploadedUrl = req.file ? buildMediaUrl(req, req.file.filename) : null;
     const post = await Post.create({
       content: req.body.content,
-      imageUrl: req.body.imageUrl,
-      imageUri: req.body.imageUri,
-      photoUrl: req.body.photoUrl,
-      videoUrl: req.body.videoUrl,
-      videoUri: req.body.videoUri,
-      stickerData: req.body.stickerData,
-      group: req.body.group,
-      pet: req.body.pet,
+      imageUrl: req.file?.mimetype.startsWith('image/') ? uploadedUrl : req.body.imageUrl,
+      videoUrl: req.file?.mimetype.startsWith('video/') ? uploadedUrl : req.body.videoUrl,
+      stickerData: parseStickerData(req.body.stickerData, res),
+      group: groupId,
+      pet: petId,
       author: req.user._id,
       likes: [],
       comments: []
@@ -180,7 +216,9 @@ const getMyPosts = async (req, res, next) => {
 
 const getFeedPosts = async (req, res, next) => {
   try {
-    const groups = await Group.find({ members: req.user._id }).select('_id');
+    const groups = await Group.find({
+      $or: [{ members: req.user._id }, { admin: req.user._id }]
+    }).select('_id');
     const groupIds = groups.map((group) => group._id);
     const currentUser = await User.findById(req.user._id).select('friends');
     const friendIds = currentUser?.friends || [];
@@ -203,13 +241,40 @@ const getFeedPosts = async (req, res, next) => {
   }
 };
 
+const getFriendsFeedPosts = async (req, res, next) => {
+  try {
+    const currentUser = await User.findById(req.user._id).select('friends');
+    const visibleFilter = await getVisiblePostFilter(req.user._id, {
+      author: { $in: currentUser?.friends || [] }
+    });
+    const posts = await populatePost(Post.find(visibleFilter)).sort({ createdAt: -1 });
+    res.status(200).json({ posts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getGroupsFeedPosts = async (req, res, next) => {
+  try {
+    const groups = await Group.find({
+      $or: [{ members: req.user._id }, { admin: req.user._id }]
+    }).select('_id');
+    const posts = await populatePost(Post.find({
+      group: { $in: groups.map((group) => group._id) }
+    })).sort({ createdAt: -1 });
+    res.status(200).json({ posts });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const searchPosts = async (req, res, next) => {
   try {
     const { keyword, group, startDate, endDate } = req.query;
     const filters = {};
 
     if (keyword) {
-      filters.content = { $regex: keyword, $options: 'i' };
+      filters.content = { $regex: escapeRegex(keyword), $options: 'i' };
     }
 
     if (group) {
@@ -225,7 +290,13 @@ const searchPosts = async (req, res, next) => {
       }
 
       if (endDate) {
-        filters.createdAt.$lte = new Date(endDate);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+          const nextDay = new Date(`${endDate}T00:00:00.000Z`);
+          nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+          filters.createdAt.$lt = nextDay;
+        } else {
+          filters.createdAt.$lte = new Date(endDate);
+        }
       }
     }
 
@@ -264,18 +335,23 @@ const getPostById = async (req, res, next) => {
 
 const updatePost = async (req, res, next) => {
   try {
+    ensurePostUpload(req, res);
     const post = await findPostById(req.params.id, res);
     ensureAuthor(post, req.user._id, res);
+    if (req.body.group === '') req.body.group = null;
+    if (req.body.pet === '') req.body.pet = null;
+    if (req.body.stickerData !== undefined) {
+      req.body.stickerData = parseStickerData(req.body.stickerData, res);
+    }
     await ensureGroupExists(req.body.group, res, req.user._id);
     await ensurePetExists(req.body.pet, req.user._id, res);
 
+    const previousImageUrl = post.imageUrl;
+    const previousVideoUrl = post.videoUrl;
     const allowedUpdates = [
       'content',
       'imageUrl',
-      'imageUri',
-      'photoUrl',
       'videoUrl',
-      'videoUri',
       'stickerData',
       'group',
       'pet'
@@ -286,7 +362,21 @@ const updatePost = async (req, res, next) => {
       }
     });
 
+    if (req.body.removeImage) post.imageUrl = undefined;
+    if (req.body.removeVideo) post.videoUrl = undefined;
+    if (req.file) {
+      const uploadedUrl = buildMediaUrl(req, req.file.filename);
+      if (req.file.mimetype.startsWith('image/')) post.imageUrl = uploadedUrl;
+      if (req.file.mimetype.startsWith('video/')) post.videoUrl = uploadedUrl;
+    }
+
     const updatedPost = await post.save();
+    if (previousImageUrl && previousImageUrl !== updatedPost.imageUrl) {
+      removeLocalMediaByUrl(previousImageUrl).catch(() => {});
+    }
+    if (previousVideoUrl && previousVideoUrl !== updatedPost.videoUrl) {
+      removeLocalMediaByUrl(previousVideoUrl).catch(() => {});
+    }
     const populatedPost = await populatePost(Post.findById(updatedPost._id));
 
     res.status(200).json({ post: populatedPost });
@@ -298,9 +388,11 @@ const updatePost = async (req, res, next) => {
 const deletePost = async (req, res, next) => {
   try {
     const post = await findPostById(req.params.id, res);
-    ensureAuthor(post, req.user._id, res);
+    await ensureCanDeletePost(post, req.user._id, res);
 
     await post.deleteOne();
+    removeLocalMediaByUrl(post.imageUrl).catch(() => {});
+    removeLocalMediaByUrl(post.videoUrl).catch(() => {});
 
     res.status(200).json({ message: 'Post deleted successfully' });
   } catch (error) {
@@ -354,6 +446,8 @@ module.exports = {
   getPosts,
   getMyPosts,
   getFeedPosts,
+  getFriendsFeedPosts,
+  getGroupsFeedPosts,
   searchPosts,
   getPostById,
   updatePost,

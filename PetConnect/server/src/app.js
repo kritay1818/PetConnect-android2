@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
 const authRoutes = require('./routes/authRoutes');
 const friendRoutes = require('./routes/friendRoutes');
@@ -10,12 +11,16 @@ const petRoutes = require('./routes/petRoutes');
 const postRoutes = require('./routes/postRoutes');
 const statsRoutes = require('./routes/statsRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
+const { getCorsOrigin } = require('./config/cors');
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({ origin: getCorsOrigin() }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: process.env.JSON_BODY_LIMIT || '100kb' }));
+app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
+  index: false
+}));
 
 app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);

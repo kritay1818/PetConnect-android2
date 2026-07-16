@@ -8,14 +8,14 @@ const generateToken = (userId) => {
   }
 
   return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: '30d'
+    expiresIn: process.env.JWT_EXPIRES_IN || '30d'
   });
 };
 
 const buildAuthResponse = (user) => ({
   token: generateToken(user._id),
   user: {
-    id: user._id,
+    _id: user._id,
     username: user.username,
     email: user.email,
     role: user.role,
@@ -25,7 +25,7 @@ const buildAuthResponse = (user) => ({
 
 const register = async (req, res, next) => {
   try {
-    const { username, email, password, role } = req.body;
+    const { username, email, password } = req.body;
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -37,7 +37,7 @@ const register = async (req, res, next) => {
       username,
       email,
       password,
-      role
+      role: 'user'
     });
 
     res.status(201).json(buildAuthResponse(user));
@@ -65,7 +65,7 @@ const login = async (req, res, next) => {
 const getCurrentUser = async (req, res) => {
   res.status(200).json({
     user: {
-      id: req.user._id,
+      _id: req.user._id,
       username: req.user.username,
       email: req.user.email,
       role: req.user.role,

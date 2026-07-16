@@ -25,7 +25,9 @@ const initialForm = {
   age: '',
   city: '',
   bio: '',
-  imageUri: ''
+  imageAsset: null,
+  imageUrl: '',
+  removeImage: false
 };
 
 const initialSearch = {
@@ -62,12 +64,14 @@ const isValidNonNegativeNumber = (value) => {
 
 export default function MyPetsScreen() {
   const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState('my');
   const [pets, setPets] = useState([]);
+  const [searchResults, setSearchResults] = useState([]);
   const [form, setForm] = useState(initialForm);
   const [search, setSearch] = useState(initialSearch);
   const [editingPetId, setEditingPetId] = useState(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
-  const [isSearchActive, setIsSearchActive] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -86,7 +90,6 @@ export default function MyPetsScreen() {
 
       const { data } = await api.get('/pets/my');
       setPets(data.pets || []);
-      setIsSearchActive(false);
     } catch (fetchError) {
       setError(getErrorMessage(fetchError, 'Could not load your pets.'));
     } finally {
@@ -121,6 +124,7 @@ export default function MyPetsScreen() {
 
   const openCreateForm = () => {
     resetForm();
+    setActiveTab('my');
     setIsFormVisible(true);
   };
 
@@ -132,8 +136,11 @@ export default function MyPetsScreen() {
       age: pet.age === undefined || pet.age === null ? '' : String(pet.age),
       city: pet.city || '',
       bio: pet.bio || '',
-      imageUri: pet.imageUri || ''
+      imageAsset: null,
+      imageUrl: pet.imageUrl || '',
+      removeImage: false
     });
+    setActiveTab('my');
     setEditingPetId(pet._id);
     setIsFormVisible(true);
     setFormError('');
@@ -144,6 +151,11 @@ export default function MyPetsScreen() {
       return 'Pet name is required.';
     }
 
+    if (form.name.trim().length > 100) return 'Pet name cannot exceed 100 characters.';
+    if (form.breed.trim().length > 100) return 'Breed cannot exceed 100 characters.';
+    if (form.city.trim().length > 100) return 'City cannot exceed 100 characters.';
+    if (form.bio.trim().length > 1000) return 'Bio cannot exceed 1000 characters.';
+
     if (!form.type.trim()) {
       return 'Pet type is required.';
     }
@@ -152,18 +164,31 @@ export default function MyPetsScreen() {
       return 'Age must be a number.';
     }
 
+    if (form.age.trim() && Number(form.age) < 0) {
+      return 'Age cannot be negative.';
+    }
+
     return '';
   };
 
-  const buildPayload = () => ({
-    name: form.name.trim(),
-    type: form.type,
-    breed: form.breed.trim(),
-    age: form.age.trim() ? Number(form.age) : undefined,
-    city: form.city.trim(),
-    bio: form.bio.trim(),
-    imageUri: form.imageUri
-  });
+  const buildPayload = () => {
+    const payload = new FormData();
+    payload.append('name', form.name.trim());
+    payload.append('type', form.type);
+    payload.append('breed', form.breed.trim());
+    if (form.age.trim()) payload.append('age', form.age.trim());
+    payload.append('city', form.city.trim());
+    payload.append('bio', form.bio.trim());
+    if (form.removeImage) payload.append('removeImage', 'true');
+    if (form.imageAsset) {
+      payload.append('image', {
+        uri: form.imageAsset.uri,
+        name: form.imageAsset.fileName || `pet-${Date.now()}.jpg`,
+        type: form.imageAsset.mimeType || 'image/jpeg'
+      });
+    }
+    return payload;
+  };
 
   const choosePhoto = async () => {
     try {
@@ -183,7 +208,16 @@ export default function MyPetsScreen() {
       });
 
       if (!result.canceled && result.assets?.length) {
-        updateField('imageUri', result.assets[0].uri);
+        const asset = result.assets[0];
+        if (asset.fileSize && asset.fileSize > 10 * 1024 * 1024) {
+          setFormError('Pet images must be 10 MB or smaller.');
+          return;
+        }
+        if (asset.mimeType && !['image/jpeg', 'image/png', 'image/webp'].includes(asset.mimeType)) {
+          setFormError('Choose a JPEG, PNG, or WebP image.');
+          return;
+        }
+        setForm((current) => ({ ...current, imageAsset: asset, removeImage: false }));
       }
     } catch (pickerError) {
       setFormError('Could not open the photo library.');
@@ -203,9 +237,9 @@ export default function MyPetsScreen() {
       setFormError('');
 
       if (editingPetId) {
-        await api.put(`/pets/${editingPetId}`, buildPayload());
+        await api.put(`/pets/${editingPetId}`, buildPayload(), { headers: { 'Content-Type': 'multipart/form-data' } });
       } else {
-        await api.post('/pets', buildPayload());
+        await api.post('/pets', buildPayload(), { headers: { 'Content-Type': 'multipart/form-data' } });
       }
 
       resetForm();
@@ -249,12 +283,19 @@ export default function MyPetsScreen() {
       }
 
       await fetchPets();
+      if (activeTab === 'search' && hasSearched) {
+        await handleSearch();
+      }
     } catch (deleteError) {
       setError(getErrorMessage(deleteError, 'Could not delete pet.'));
     }
   };
 
   const validateSearch = (searchValues = search) => {
+    if (searchValues.breed.trim().length > 100 || searchValues.city.trim().length > 100) {
+      return 'Breed and city searches cannot exceed 100 characters.';
+    }
+
     if (!isValidNonNegativeNumber(searchValues.minAge)) {
       return 'Minimum age must be a valid non-negative number.';
     }
@@ -300,7 +341,7 @@ export default function MyPetsScreen() {
     return params;
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async ({ refreshing = false } = {}) => {
     const validationMessage = validateSearch();
 
     if (validationMessage) {
@@ -311,28 +352,56 @@ export default function MyPetsScreen() {
     try {
       setError('');
       setSearchError('');
-      setIsLoading(true);
+      if (refreshing) {
+        setIsRefreshing(true);
+      } else {
+        setIsLoading(true);
+      }
 
       const { data } = await api.get('/pets/search', {
         params: buildSearchParams()
       });
 
-      setPets(data.pets || []);
-      setIsSearchActive(true);
+      setSearchResults(data.pets || []);
+      setHasSearched(true);
     } catch (searchError) {
       setError(getErrorMessage(searchError, 'Could not search pets.'));
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
   };
 
-  const clearSearch = async () => {
+  const clearSearch = () => {
     setSearch(initialSearch);
     setSearchError('');
-    await fetchPets();
+    setSearchResults([]);
+    setHasSearched(false);
+  };
+
+  const changeTab = (nextTab) => {
+    setActiveTab(nextTab);
+    setError('');
+
+    if (nextTab === 'search' && isFormVisible) {
+      resetForm();
+      setIsFormVisible(false);
+    }
+  };
+
+  const refreshCurrentTab = () => {
+    if (activeTab === 'search') {
+      if (hasSearched) {
+        handleSearch({ refreshing: true });
+      }
+      return;
+    }
+
+    fetchPets({ refreshing: true });
   };
 
   const isPetOwner = (pet) => getId(pet.owner) === getId(user);
+  const displayedPets = activeTab === 'my' ? pets : searchResults;
 
   return (
     <ScrollView
@@ -341,27 +410,59 @@ export default function MyPetsScreen() {
       refreshControl={
         <RefreshControl
           refreshing={isRefreshing}
-          onRefresh={() => fetchPets({ refreshing: true })}
+          onRefresh={refreshCurrentTab}
           tintColor="#2f8f68"
         />
       }
     >
       <View style={styles.header}>
         <View>
-          <Text style={styles.kicker}>Pet profiles</Text>
-          <Text style={styles.title}>My Pets</Text>
+          <Text style={styles.kicker}>
+            {activeTab === 'my' ? 'Your pet profiles' : 'PetConnect community'}
+          </Text>
+          <Text style={styles.title}>
+            {activeTab === 'my' ? 'My Pets' : 'Discover Pets'}
+          </Text>
         </View>
-        <TouchableOpacity style={styles.createButton} onPress={openCreateForm}>
-          <Text style={styles.createButtonText}>Create Pet</Text>
-        </TouchableOpacity>
+        {activeTab === 'my' ? (
+          <TouchableOpacity style={styles.createButton} onPress={openCreateForm}>
+            <Text style={styles.createButtonText}>Create Pet</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.searchCard}>
-        <Text style={styles.searchTitle}>Search Pets</Text>
+      <View style={styles.tabRow}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'my' && styles.tabActive]}
+          onPress={() => changeTab('my')}
+        >
+          <Text style={[styles.tabText, activeTab === 'my' && styles.tabTextActive]}>
+            My Pets
+          </Text>
+          <Text style={[styles.tabMeta, activeTab === 'my' && styles.tabMetaActive]}>
+            View and manage
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'search' && styles.tabActive]}
+          onPress={() => changeTab('search')}
+        >
+          <Text style={[styles.tabText, activeTab === 'search' && styles.tabTextActive]}>
+            Global Search
+          </Text>
+          <Text style={[styles.tabMeta, activeTab === 'search' && styles.tabMetaActive]}>
+            Browse community
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'search' ? (
+        <View style={styles.searchCard}>
+        <Text style={styles.searchTitle}>Global Pet Search</Text>
         <Text style={styles.searchHint}>
-          Filter pets by type, breed, city, and age range.
+          Search community pets by type, breed, city, and age.
         </Text>
 
         <Text style={styles.label}>Type</Text>
@@ -446,16 +547,17 @@ export default function MyPetsScreen() {
         {searchError ? <Text style={styles.searchError}>{searchError}</Text> : null}
 
         <View style={styles.searchActions}>
-          <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
+          <TouchableOpacity style={styles.searchButton} onPress={() => handleSearch()}>
             <Text style={styles.searchButtonText}>Search</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.clearSearchButton} onPress={clearSearch}>
             <Text style={styles.clearSearchButtonText}>Clear</Text>
           </TouchableOpacity>
         </View>
-      </View>
+        </View>
+      ) : null}
 
-      {isFormVisible ? (
+      {activeTab === 'my' && isFormVisible ? (
         <View style={styles.formCard}>
           <View style={styles.formHeader}>
             <Text style={styles.formTitle}>
@@ -547,8 +649,8 @@ export default function MyPetsScreen() {
           />
 
           <Text style={styles.label}>Photo</Text>
-          {form.imageUri ? (
-            <Image source={{ uri: form.imageUri }} style={styles.formImagePreview} />
+          {form.imageAsset?.uri || form.imageUrl ? (
+            <Image source={{ uri: form.imageAsset?.uri || form.imageUrl }} style={styles.formImagePreview} />
           ) : (
             <View style={styles.formImagePlaceholder}>
               <Text style={styles.formImagePlaceholderText}>No photo selected</Text>
@@ -558,10 +660,10 @@ export default function MyPetsScreen() {
             <TouchableOpacity style={styles.photoButton} onPress={choosePhoto}>
               <Text style={styles.photoButtonText}>Choose Photo</Text>
             </TouchableOpacity>
-            {form.imageUri ? (
+            {form.imageAsset?.uri || form.imageUrl ? (
               <TouchableOpacity
                 style={styles.removePhotoButton}
-                onPress={() => updateField('imageUri', '')}
+                onPress={() => setForm((current) => ({ ...current, imageAsset: null, imageUrl: '', removeImage: true }))}
               >
                 <Text style={styles.removePhotoButtonText}>Remove</Text>
               </TouchableOpacity>
@@ -589,21 +691,31 @@ export default function MyPetsScreen() {
       {isLoading ? (
         <View style={styles.loadingBox}>
           <ActivityIndicator size="large" color="#2f8f68" />
-          <Text style={styles.loadingText}>Loading your pets...</Text>
+          <Text style={styles.loadingText}>
+            {activeTab === 'my' ? 'Loading your pets...' : 'Searching community pets...'}
+          </Text>
         </View>
-      ) : pets.length === 0 ? (
+      ) : activeTab === 'search' && !hasSearched ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyEyebrow}>Community directory</Text>
+          <Text style={styles.emptyTitle}>Find pets across PetConnect</Text>
+          <Text style={styles.emptyText}>
+            Choose one or more filters above, then search to explore community pet profiles.
+          </Text>
+        </View>
+      ) : displayedPets.length === 0 ? (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>
-            {isSearchActive ? 'No matching pets found' : 'No pets yet'}
+            {activeTab === 'search' ? 'No matching pets found' : 'No pets yet'}
           </Text>
           <Text style={styles.emptyText}>
-            {isSearchActive
-              ? 'Try changing the filters or clear search to reload your pets.'
+            {activeTab === 'search'
+              ? 'Try changing the filters or clear them to start a new search.'
               : 'Create your first pet profile to start building your PetConnect family.'}
           </Text>
-          {isSearchActive ? (
+          {activeTab === 'search' ? (
             <TouchableOpacity style={styles.emptyButton} onPress={clearSearch}>
-              <Text style={styles.emptyButtonText}>Clear Search</Text>
+              <Text style={styles.emptyButtonText}>Clear Filters</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity style={styles.emptyButton} onPress={openCreateForm}>
@@ -612,11 +724,20 @@ export default function MyPetsScreen() {
           )}
         </View>
       ) : (
-        <View style={styles.petList}>
-          {pets.map((pet) => (
+        <>
+          <View style={styles.resultsHeader}>
+            <Text style={styles.resultsTitle}>
+              {activeTab === 'my' ? 'Your pets' : 'Community results'}
+            </Text>
+            <Text style={styles.resultsCount}>
+              {displayedPets.length} pet{displayedPets.length === 1 ? '' : 's'}
+            </Text>
+          </View>
+          <View style={styles.petList}>
+            {displayedPets.map((pet) => (
             <View key={pet._id} style={styles.petCard}>
-              {pet.imageUri || pet.imageUrl ? (
-                <Image source={{ uri: pet.imageUri || pet.imageUrl }} style={styles.petImage} />
+              {pet.imageUrl ? (
+                <Image source={{ uri: pet.imageUrl }} style={styles.petImage} />
               ) : (
                 <View style={styles.petImagePlaceholder}>
                   <Text style={styles.petImagePlaceholderIcon}>PET</Text>
@@ -651,8 +772,9 @@ export default function MyPetsScreen() {
 
               {pet.bio ? <Text style={styles.bio}>{pet.bio}</Text> : null}
             </View>
-          ))}
-        </View>
+            ))}
+          </View>
+        </>
       )}
     </ScrollView>
   );
@@ -698,6 +820,41 @@ const styles = StyleSheet.create({
     color: '#b3261e',
     lineHeight: 20,
     marginBottom: 12
+  },
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: '#e6f2ea',
+    borderRadius: 10,
+    padding: 4,
+    marginBottom: 18
+  },
+  tab: {
+    flex: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 11,
+    alignItems: 'center'
+  },
+  tabActive: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#d4e6da'
+  },
+  tabText: {
+    color: '#5f7569',
+    fontWeight: '800',
+    marginBottom: 2
+  },
+  tabTextActive: {
+    color: '#173b2c'
+  },
+  tabMeta: {
+    color: '#7c9185',
+    fontSize: 11,
+    fontWeight: '600'
+  },
+  tabMetaActive: {
+    color: '#2f8f68'
   },
   searchCard: {
     backgroundColor: '#ffffff',
@@ -914,6 +1071,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginBottom: 8
   },
+  emptyEyebrow: {
+    color: '#2f8f68',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    marginBottom: 8
+  },
   emptyText: {
     color: '#5f7569',
     textAlign: 'center',
@@ -929,6 +1093,22 @@ const styles = StyleSheet.create({
   emptyButtonText: {
     color: '#ffffff',
     fontWeight: '800'
+  },
+  resultsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 2
+  },
+  resultsTitle: {
+    color: '#173b2c',
+    fontSize: 17,
+    fontWeight: '800'
+  },
+  resultsCount: {
+    color: '#5f7569',
+    fontWeight: '700'
   },
   petList: {
     gap: 12
@@ -1009,4 +1189,3 @@ const styles = StyleSheet.create({
     lineHeight: 21
   }
 });
-

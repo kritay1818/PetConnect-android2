@@ -21,3 +21,7 @@ Thumbs.db
 .expo/
 dist/
 web-build/
+
+# Runtime media uploads
+PetConnect/server/uploads/*
+!PetConnect/server/uploads/.gitkeep

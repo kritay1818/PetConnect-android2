@@ -1,41 +1,73 @@
-const { body, query, validationResult } = require('express-validator');
+const { body, query } = require('express-validator');
+const {
+  rejectUnknownFields,
+  rejectUnknownQuery,
+  requireAtLeastOneField,
+  handleValidationErrors
+} = require('./commonValidators');
+
+const postFields = [
+  'content', 'imageUrl', 'videoUrl', 'stickerData', 'group', 'pet',
+  'removeImage', 'removeVideo'
+];
+
+const validateStickerPayload = (value) => {
+  let drawing = value;
+  if (typeof drawing === 'string') {
+    try {
+      drawing = JSON.parse(drawing);
+    } catch (error) {
+      throw new Error('stickerData must be valid JSON');
+    }
+  }
+  if (JSON.stringify(drawing).length > 50000) throw new Error('stickerData is too large');
+  if (!Array.isArray(drawing) || drawing.length > 30) {
+    throw new Error('stickerData must contain at most 30 strokes');
+  }
+  drawing.forEach((stroke) => {
+    if (!stroke || typeof stroke.color !== 'string' || stroke.color.length > 32 || !Array.isArray(stroke.points)) {
+      throw new Error('stickerData contains an invalid stroke');
+    }
+    if (stroke.points.length > 500) throw new Error('A drawing stroke cannot exceed 500 points');
+    stroke.points.forEach((point) => {
+      if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
+        throw new Error('stickerData contains an invalid point');
+      }
+    });
+  });
+  return true;
+};
 
 const validateCreatePost = [
   body('content')
     .trim()
     .notEmpty()
-    .withMessage('Post content is required'),
+    .withMessage('Post content is required')
+    .isLength({ max: 5000 })
+    .withMessage('Post content cannot exceed 5000 characters'),
   body('imageUrl')
     .optional({ checkFalsy: true })
     .trim()
     .isURL()
     .withMessage('imageUrl must be a valid URL'),
-  body('imageUri')
-    .optional({ checkFalsy: true })
-    .trim(),
-  body('photoUrl')
-    .optional({ checkFalsy: true })
-    .trim()
-    .isURL()
-    .withMessage('photoUrl must be a valid URL'),
   body('videoUrl')
     .optional({ checkFalsy: true })
     .trim()
     .isURL()
     .withMessage('videoUrl must be a valid URL'),
-  body('videoUri')
-    .optional({ checkFalsy: true })
-    .trim(),
   body('stickerData')
-    .optional(),
-  body('group')
     .optional()
+    .custom(validateStickerPayload),
+  body('group')
+    .optional({ nullable: true, checkFalsy: true })
     .isMongoId()
     .withMessage('group must be a valid ObjectId'),
   body('pet')
-    .optional({ checkFalsy: true })
+    .optional({ nullable: true, checkFalsy: true })
     .isMongoId()
-    .withMessage('pet must be a valid ObjectId')
+    .withMessage('pet must be a valid ObjectId'),
+  body('removeImage').optional().isBoolean().toBoolean(),
+  body('removeVideo').optional().isBoolean().toBoolean()
 ];
 
 const validateUpdatePost = [
@@ -43,44 +75,42 @@ const validateUpdatePost = [
     .optional()
     .trim()
     .notEmpty()
-    .withMessage('Post content cannot be empty'),
+    .withMessage('Post content cannot be empty')
+    .isLength({ max: 5000 })
+    .withMessage('Post content cannot exceed 5000 characters'),
   body('imageUrl')
     .optional({ checkFalsy: true })
     .trim()
     .isURL()
     .withMessage('imageUrl must be a valid URL'),
-  body('imageUri')
-    .optional({ checkFalsy: true })
-    .trim(),
-  body('photoUrl')
-    .optional({ checkFalsy: true })
-    .trim()
-    .isURL()
-    .withMessage('photoUrl must be a valid URL'),
   body('videoUrl')
     .optional({ checkFalsy: true })
     .trim()
     .isURL()
     .withMessage('videoUrl must be a valid URL'),
-  body('videoUri')
-    .optional({ checkFalsy: true })
-    .trim(),
   body('stickerData')
-    .optional(),
-  body('group')
     .optional()
+    .custom(validateStickerPayload),
+  body('group')
+    .optional({ nullable: true, checkFalsy: true })
     .isMongoId()
     .withMessage('group must be a valid ObjectId'),
   body('pet')
-    .optional({ checkFalsy: true })
+    .optional({ nullable: true, checkFalsy: true })
     .isMongoId()
-    .withMessage('pet must be a valid ObjectId')
+    .withMessage('pet must be a valid ObjectId'),
+  body('removeImage').optional().isBoolean().toBoolean(),
+  body('removeVideo').optional().isBoolean().toBoolean()
 ];
 
 const validateSearchPosts = [
   query('keyword')
     .optional()
-    .trim(),
+    .isString()
+    .withMessage('keyword must be a string')
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('keyword cannot exceed 100 characters'),
   query('group')
     .optional()
     .isMongoId()
@@ -111,23 +141,17 @@ const validateComment = [
     .trim()
     .notEmpty()
     .withMessage('Comment text is required')
+    .isLength({ max: 2000 })
+    .withMessage('Comment text cannot exceed 2000 characters')
 ];
-
-const handleValidationErrors = (req, res, next) => {
-  const errors = validationResult(req);
-
-  if (errors.isEmpty()) {
-    return next();
-  }
-
-  res.status(400);
-  return next(new Error(errors.array().map((error) => error.msg).join(', ')));
-};
 
 module.exports = {
   validateCreatePost,
-  validateUpdatePost,
+  validateUpdatePost: [requireAtLeastOneField(postFields), ...validateUpdatePost],
   validateSearchPosts,
   validateComment,
+  rejectPostFields: rejectUnknownFields(postFields),
+  rejectCommentFields: rejectUnknownFields(['text']),
+  rejectPostSearchFields: rejectUnknownQuery(['keyword', 'group', 'startDate', 'endDate']),
   handleValidationErrors
 };

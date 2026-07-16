@@ -1,8 +1,9 @@
 const mongoose = require('mongoose');
 
 const User = require('../models/User');
+const { escapeRegex } = require('../utils/security');
 
-const USER_PUBLIC_FIELDS = 'username role createdAt';
+const USER_PUBLIC_FIELDS = 'username';
 const USER_SEARCH_LIMIT = 20;
 
 const ensureValidObjectId = (id, res, label = 'user id') => {
@@ -15,16 +16,12 @@ const ensureValidObjectId = (id, res, label = 'user id') => {
 const idsInclude = (ids = [], id) =>
   ids.some((existingId) => existingId.toString() === id.toString());
 
-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 const formatPublicUser = (user, currentUser) => {
   const userId = user._id.toString();
 
   return {
-    id: userId,
+    _id: userId,
     username: user.username,
-    role: user.role,
-    createdAt: user.createdAt,
     friendshipStatus: idsInclude(currentUser.friends, user._id)
       ? 'friends'
       : idsInclude(currentUser.friendRequestsSent, user._id)
@@ -63,8 +60,7 @@ const searchUsers = async (req, res, next) => {
     if (keyword) {
       const safeKeyword = escapeRegex(keyword);
       filters.$or = [
-        { username: { $regex: safeKeyword, $options: 'i' } },
-        { email: { $regex: safeKeyword, $options: 'i' } }
+        { username: { $regex: safeKeyword, $options: 'i' } }
       ];
     }
 
@@ -184,10 +180,8 @@ const acceptFriendRequest = async (req, res, next) => {
     res.status(200).json({
       message: 'Friend request accepted',
       friend: {
-        id: requester._id,
-        username: requester.username,
-        role: requester.role,
-        createdAt: requester.createdAt
+        _id: requester._id,
+        username: requester.username
       }
     });
   } catch (error) {

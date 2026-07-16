@@ -18,9 +18,28 @@ export default function RegisterScreen({ navigation }) {
   };
 
   const handleSubmit = async () => {
+    const username = form.username.trim();
+    const email = form.email.trim().toLowerCase();
+    if (!username || !email || !form.password) {
+      setAuthError('Username, email, and password are required.');
+      return;
+    }
+    if (username.length < 2 || username.length > 50) {
+      setAuthError('Username must be 2-50 characters.');
+      return;
+    }
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setAuthError('Enter a valid email address.');
+      return;
+    }
+    if (form.password.length < 6 || form.password.length > 128) {
+      setAuthError('Password must be 6-128 characters.');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
-      await register(form);
+      await register({ username, email, password: form.password });
     } catch (error) {
       setAuthError(getErrorMessage(error));
     } finally {
