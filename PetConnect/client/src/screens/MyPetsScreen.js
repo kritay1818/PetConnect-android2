@@ -72,6 +72,7 @@ export default function MyPetsScreen() {
   const [search, setSearch] = useState(initialSearch);
   const [editingPetId, setEditingPetId] = useState(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
+  const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -390,6 +391,11 @@ export default function MyPetsScreen() {
     setHasSearched(false);
   };
 
+  const closeSearch = () => {
+    clearSearch();
+    setIsSearchVisible(false);
+  };
+
   const changeTab = (nextTab) => {
     setActiveTab(nextTab);
     setError('');
@@ -502,7 +508,14 @@ export default function MyPetsScreen() {
           <TouchableOpacity style={styles.createButton} onPress={openCreateForm}>
             <Text style={styles.createButtonText}>Create Pet</Text>
           </TouchableOpacity>
-        ) : null}
+        ) : (
+          <TouchableOpacity
+            style={styles.createButton}
+            onPress={() => setIsSearchVisible(true)}
+          >
+            <Text style={styles.createButtonText}>Search</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -532,9 +545,14 @@ export default function MyPetsScreen() {
         </TouchableOpacity>
       </View>
 
-      {activeTab === 'search' ? (
+      {activeTab === 'search' && isSearchVisible ? (
         <View style={styles.searchCard}>
-        <Text style={styles.searchTitle}>Global Pet Search</Text>
+        <View style={styles.formHeader}>
+          <Text style={styles.searchTitle}>Global Pet Search</Text>
+          <TouchableOpacity onPress={closeSearch}>
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
         <Text style={styles.searchHint}>
           Search community pets by type, breed, city, and age.
         </Text>

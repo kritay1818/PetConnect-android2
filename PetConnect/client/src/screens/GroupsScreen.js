@@ -80,6 +80,7 @@ export default function GroupsScreen() {
   const [form, setForm] = useState(initialForm);
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
+  const [searchVisibility, setSearchVisibility] = useState({ all: false, my: false });
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -270,8 +271,13 @@ export default function GroupsScreen() {
 
       const { data } = await api.get('/groups/search', { params });
       const enrichedGroups = await enrichAdminGroups(data.groups || []);
-      setGroups(enrichedGroups);
-      setActiveTab('all');
+      if (activeTab === 'all') {
+        setGroups(enrichedGroups);
+      } else {
+        const { data: myGroupsData } = await api.get('/groups/my');
+        const myGroupIds = new Set((myGroupsData.groups || []).map((group) => group._id));
+        setMyGroups(enrichedGroups.filter((group) => myGroupIds.has(group._id)));
+      }
     } catch (searchError) {
       setError(getErrorMessage(searchError, 'Could not search groups.'));
     } finally {
@@ -281,7 +287,13 @@ export default function GroupsScreen() {
 
   const clearSearch = async () => {
     setSearch(initialSearch);
+    setError('');
     await fetchGroups();
+  };
+
+  const closeSearch = async () => {
+    setSearchVisibility((current) => ({ ...current, [activeTab]: false }));
+    await clearSearch();
   };
 
   const resetManagerSearch = () => {
@@ -819,8 +831,23 @@ export default function GroupsScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.searchToolbar}>
+        <TouchableOpacity
+          style={styles.createButton}
+          onPress={() => setSearchVisibility((current) => ({ ...current, [activeTab]: true }))}
+        >
+          <Text style={styles.createButtonText}>Search</Text>
+        </TouchableOpacity>
+      </View>
+
+      {searchVisibility[activeTab] ? (
       <View style={styles.searchCard}>
-        <Text style={styles.sectionTitle}>Search groups</Text>
+        <View style={styles.formHeader}>
+          <Text style={styles.sectionTitle}>Search groups</Text>
+          <TouchableOpacity onPress={closeSearch}>
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
         <TextInput
           value={search.name}
           onChangeText={(value) => updateSearchField('name', value)}
@@ -886,6 +913,7 @@ export default function GroupsScreen() {
           </TouchableOpacity>
         </View>
       </View>
+      ) : null}
 
       {isFormVisible ? (
         <View style={styles.formCard}>
@@ -1080,6 +1108,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#dcebe1',
     marginBottom: 16
+  },
+  searchToolbar: {
+    alignItems: 'flex-end',
+    marginBottom: 14
   },
   sectionTitle: {
     color: '#173b2c',

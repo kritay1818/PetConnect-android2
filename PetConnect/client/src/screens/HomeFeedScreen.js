@@ -24,6 +24,7 @@ const initialForm = {
   imageAsset: null,
   imageUrl: '',
   removeImage: false,
+  videoAsset: null,
   videoUrl: '',
   group: '',
   pet: ''
@@ -173,6 +174,7 @@ export default function HomeFeedScreen() {
       imageAsset: null,
       imageUrl: post.imageUrl || '',
       removeImage: false,
+      videoAsset: null,
       videoUrl: post.videoUrl || '',
       group: getId(post.group),
       pet: getId(post.pet)
@@ -211,7 +213,13 @@ export default function HomeFeedScreen() {
     if (form.videoUrl.trim()) payload.append('videoUrl', form.videoUrl.trim());
     if (editingPostId && !form.videoUrl.trim()) payload.append('removeVideo', 'true');
     if (form.removeImage) payload.append('removeImage', 'true');
-    if (form.imageAsset) {
+    if (form.videoAsset) {
+      payload.append('media', {
+        uri: form.videoAsset.uri,
+        name: form.videoAsset.fileName || `post-video-${Date.now()}.mp4`,
+        type: form.videoAsset.mimeType || 'video/mp4'
+      });
+    } else if (form.imageAsset) {
       payload.append('media', {
         uri: form.imageAsset.uri,
         name: form.imageAsset.fileName || `post-${Date.now()}.jpg`,
@@ -248,10 +256,53 @@ export default function HomeFeedScreen() {
           setFormError('Choose a JPEG, PNG, or WebP image.');
           return;
         }
-        setForm((current) => ({ ...current, imageAsset: asset, removeImage: false }));
+        setForm((current) => ({
+          ...current,
+          imageAsset: asset,
+          removeImage: false,
+          videoAsset: null
+        }));
       }
     } catch (pickerError) {
       setFormError('Could not open the photo library.');
+    }
+  };
+
+  const chooseVideo = async () => {
+    try {
+      setFormError('');
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permission.granted) {
+        setFormError('Gallery permission is required to choose a post video.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: false,
+        quality: 1
+      });
+
+      if (!result.canceled && result.assets?.length) {
+        const asset = result.assets[0];
+        if (asset.fileSize && asset.fileSize > 25 * 1024 * 1024) {
+          setFormError('Videos must be 25 MB or smaller.');
+          return;
+        }
+        if (asset.mimeType && !['video/mp4', 'video/quicktime', 'video/webm'].includes(asset.mimeType)) {
+          setFormError('Choose an MP4, MOV, or WebM video.');
+          return;
+        }
+        setForm((current) => ({
+          ...current,
+          imageAsset: null,
+          imageUrl: '',
+          videoAsset: asset
+        }));
+      }
+    } catch (pickerError) {
+      setFormError('Could not open your video library.');
     }
   };
 
@@ -755,15 +806,43 @@ export default function HomeFeedScreen() {
               </TouchableOpacity>
             ) : null}
           </View>
-          <Text style={styles.label}>Video URL</Text>
-          <TextInput
-            value={form.videoUrl}
-            onChangeText={(value) => updateFormField('videoUrl', value)}
-            placeholder="https://example.com/video.mp4"
-            placeholderTextColor="#8a9b91"
-            style={styles.input}
-            autoCapitalize="none"
-          />
+          {editingPostId ? (
+            <>
+              <Text style={styles.label}>Video URL</Text>
+              <TextInput
+                value={form.videoUrl}
+                onChangeText={(value) => updateFormField('videoUrl', value)}
+                placeholder="https://example.com/video.mp4"
+                placeholderTextColor="#8a9b91"
+                style={styles.input}
+                autoCapitalize="none"
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.label}>Video</Text>
+              <View style={styles.formImagePlaceholder}>
+                <Text style={styles.formImagePlaceholderText}>
+                  {form.videoAsset?.fileName || (form.videoAsset ? 'Video selected' : 'No video selected')}
+                </Text>
+              </View>
+              <View style={styles.photoActions}>
+                <TouchableOpacity style={styles.photoButton} onPress={chooseVideo}>
+                  <Text style={styles.photoButtonText}>
+                    {form.videoAsset ? 'Replace Video' : 'Choose Video'}
+                  </Text>
+                </TouchableOpacity>
+                {form.videoAsset ? (
+                  <TouchableOpacity
+                    style={styles.removePhotoButton}
+                    onPress={() => setForm((current) => ({ ...current, videoAsset: null }))}
+                  >
+                    <Text style={styles.removePhotoButtonText}>Remove</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </>
+          )}
           <Text style={styles.label}>Group</Text>
           {renderGroupPicker(form.group, (value) => updateFormField('group', value))}
           <Text style={styles.label}>Pet</Text>
