@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  FlatList,
   Image,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -78,6 +79,7 @@ export default function MyPetsScreen() {
   const [error, setError] = useState('');
   const [formError, setFormError] = useState('');
   const [searchError, setSearchError] = useState('');
+  const tabTransition = useRef(new Animated.Value(1)).current;
 
   const fetchPets = useCallback(async ({ refreshing = false } = {}) => {
     try {
@@ -101,6 +103,15 @@ export default function MyPetsScreen() {
   useEffect(() => {
     fetchPets();
   }, [fetchPets]);
+
+  useEffect(() => {
+    tabTransition.setValue(0);
+    Animated.timing(tabTransition, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true
+    }).start();
+  }, [activeTab, tabTransition]);
 
   const updateField = (name, value) => {
     setFormError('');
@@ -402,19 +413,82 @@ export default function MyPetsScreen() {
 
   const isPetOwner = (pet) => getId(pet.owner) === getId(user);
   const displayedPets = activeTab === 'my' ? pets : searchResults;
+  const showPetGrid = !isLoading && displayedPets.length > 0;
+
+  const renderPetCard = ({ item: pet }) => (
+    <View style={styles.petCard}>
+      {pet.imageUrl ? (
+        <Image source={{ uri: pet.imageUrl }} style={styles.petImage} />
+      ) : (
+        <View style={styles.petImagePlaceholder}>
+          <Text style={styles.petImagePlaceholderIcon}>PET</Text>
+          <Text style={styles.petImagePlaceholderText}>Pet photo</Text>
+        </View>
+      )}
+
+      <View style={styles.petCardHeader}>
+        <View>
+          <Text style={styles.petName}>{pet.name}</Text>
+          <Text style={styles.petType}>{pet.type}</Text>
+        </View>
+        {isPetOwner(pet) ? (
+          <View style={styles.actions}>
+            <TouchableOpacity onPress={() => openEditForm(pet)}>
+              <Text style={styles.editText}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => confirmDelete(pet)}>
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.petDetails}>
+        <Text style={styles.detailText}>Breed: {pet.breed || 'Not set'}</Text>
+        <Text style={styles.detailText}>
+          Age: {pet.age === undefined || pet.age === null ? 'Not set' : pet.age}
+        </Text>
+        <Text style={styles.detailText}>City: {pet.city || 'Not set'}</Text>
+      </View>
+
+      {pet.bio ? <Text style={styles.bio}>{pet.bio}</Text> : null}
+    </View>
+  );
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl
-          refreshing={isRefreshing}
-          onRefresh={refreshCurrentTab}
-          tintColor="#2f8f68"
-        />
-      }
+    <Animated.View
+      style={[
+        styles.container,
+        {
+          opacity: tabTransition,
+          transform: [
+            {
+              translateY: tabTransition.interpolate({
+                inputRange: [0, 1],
+                outputRange: [8, 0]
+              })
+            }
+          ]
+        }
+      ]}
     >
+      <FlatList
+        data={showPetGrid ? displayedPets : []}
+        keyExtractor={(pet) => pet._id}
+        renderItem={renderPetCard}
+        numColumns={2}
+        columnWrapperStyle={styles.petGridRow}
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={refreshCurrentTab}
+            tintColor="#2f8f68"
+          />
+        }
+        ListHeaderComponent={(
+          <>
       <View style={styles.header}>
         <View>
           <Text style={styles.kicker}>
@@ -724,59 +798,19 @@ export default function MyPetsScreen() {
           )}
         </View>
       ) : (
-        <>
-          <View style={styles.resultsHeader}>
-            <Text style={styles.resultsTitle}>
-              {activeTab === 'my' ? 'Your pets' : 'Community results'}
-            </Text>
-            <Text style={styles.resultsCount}>
-              {displayedPets.length} pet{displayedPets.length === 1 ? '' : 's'}
-            </Text>
-          </View>
-          <View style={styles.petList}>
-            {displayedPets.map((pet) => (
-            <View key={pet._id} style={styles.petCard}>
-              {pet.imageUrl ? (
-                <Image source={{ uri: pet.imageUrl }} style={styles.petImage} />
-              ) : (
-                <View style={styles.petImagePlaceholder}>
-                  <Text style={styles.petImagePlaceholderIcon}>PET</Text>
-                  <Text style={styles.petImagePlaceholderText}>Pet photo</Text>
-                </View>
-              )}
-
-              <View style={styles.petCardHeader}>
-                <View>
-                  <Text style={styles.petName}>{pet.name}</Text>
-                  <Text style={styles.petType}>{pet.type}</Text>
-                </View>
-                {isPetOwner(pet) ? (
-                  <View style={styles.actions}>
-                    <TouchableOpacity onPress={() => openEditForm(pet)}>
-                      <Text style={styles.editText}>Edit</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => confirmDelete(pet)}>
-                      <Text style={styles.deleteText}>Delete</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null}
-              </View>
-
-              <View style={styles.petDetails}>
-                <Text style={styles.detailText}>Breed: {pet.breed || 'Not set'}</Text>
-                <Text style={styles.detailText}>
-                  Age: {pet.age === undefined || pet.age === null ? 'Not set' : pet.age}
-                </Text>
-                <Text style={styles.detailText}>City: {pet.city || 'Not set'}</Text>
-              </View>
-
-              {pet.bio ? <Text style={styles.bio}>{pet.bio}</Text> : null}
-            </View>
-            ))}
-          </View>
-        </>
+        <View style={styles.resultsHeader}>
+          <Text style={styles.resultsTitle}>
+            {activeTab === 'my' ? 'Your pets' : 'Community results'}
+          </Text>
+          <Text style={styles.resultsCount}>
+            {displayedPets.length} pet{displayedPets.length === 1 ? '' : 's'}
+          </Text>
+        </View>
       )}
-    </ScrollView>
+          </>
+        )}
+      />
+    </Animated.View>
   );
 }
 
@@ -804,7 +838,7 @@ const styles = StyleSheet.create({
   title: {
     color: '#173b2c',
     fontSize: 28,
-    fontWeight: '800'
+    fontFamily: 'PetConnectDisplay'
   },
   createButton: {
     backgroundColor: '#2f8f68',
@@ -1104,31 +1138,34 @@ const styles = StyleSheet.create({
   resultsTitle: {
     color: '#173b2c',
     fontSize: 17,
-    fontWeight: '800'
+    fontFamily: 'PetConnectDisplay'
   },
   resultsCount: {
     color: '#5f7569',
     fontWeight: '700'
   },
-  petList: {
+  petGridRow: {
     gap: 12
   },
   petCard: {
+    flex: 1,
+    maxWidth: '48.5%',
     backgroundColor: '#ffffff',
     borderRadius: 8,
-    padding: 18,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#dcebe1'
+    borderColor: '#dcebe1',
+    marginBottom: 12
   },
   petImage: {
     width: '100%',
-    height: 190,
+    height: 112,
     borderRadius: 8,
     backgroundColor: '#e6f2ea',
     marginBottom: 14
   },
   petImagePlaceholder: {
-    height: 150,
+    height: 112,
     borderRadius: 8,
     backgroundColor: '#eef8f0',
     borderWidth: 1,
@@ -1139,7 +1176,7 @@ const styles = StyleSheet.create({
   },
   petImagePlaceholderIcon: {
     color: '#2f8f68',
-    fontSize: 34,
+    fontSize: 26,
     fontWeight: '800',
     marginBottom: 4
   },
@@ -1148,15 +1185,13 @@ const styles = StyleSheet.create({
     fontWeight: '800'
   },
   petCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
+    gap: 8,
     marginBottom: 12
   },
   petName: {
     color: '#173b2c',
-    fontSize: 22,
-    fontWeight: '800'
+    fontSize: 19,
+    fontFamily: 'PetConnectDisplay'
   },
   petType: {
     color: '#2f8f68',

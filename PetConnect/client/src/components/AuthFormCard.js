@@ -69,13 +69,16 @@ const styles = StyleSheet.create({
   logo: {
     color: '#2f8f68',
     fontSize: 18,
-    fontWeight: '800',
+    fontFamily: 'PetConnectDisplay',
     marginBottom: 18
   },
   title: {
     color: '#173b2c',
     fontSize: 28,
-    fontWeight: '800',
+    fontFamily: 'PetConnectDisplay',
+    textShadowColor: 'rgba(47, 143, 104, 0.18)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 3,
     marginBottom: 8
   },
   subtitle: {

@@ -52,7 +52,7 @@ const MainTabs = () => (
     screenOptions={({ route }) => ({
       headerStyle: { backgroundColor: '#f7fbf6' },
       headerTintColor: '#173b2c',
-      headerTitleStyle: { fontWeight: '700' },
+      headerTitleStyle: { fontFamily: 'PetConnectDisplay' },
       tabBarActiveTintColor: '#2f8f68',
       tabBarInactiveTintColor: '#6f8176',
       tabBarStyle: {
@@ -87,7 +87,7 @@ const ProtectedStack = () => (
     screenOptions={{
       headerStyle: { backgroundColor: '#f7fbf6' },
       headerTintColor: '#173b2c',
-      headerTitleStyle: { fontWeight: '700' },
+      headerTitleStyle: { fontFamily: 'PetConnectDisplay' },
       contentStyle: { backgroundColor: '#f7fbf6' }
     }}
   >
