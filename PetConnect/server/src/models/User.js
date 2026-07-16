@@ -25,7 +25,25 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ['user', 'groupAdmin'],
       default: 'user'
-    }
+    },
+    friends: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ],
+    friendRequestsSent: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ],
+    friendRequestsReceived: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ]
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );

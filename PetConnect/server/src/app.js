@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 
 const authRoutes = require('./routes/authRoutes');
+const friendRoutes = require('./routes/friendRoutes');
 const groupRoutes = require('./routes/groupRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const messageRoutes = require('./routes/messageRoutes');
@@ -18,6 +19,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/friends', friendRoutes);
 app.use('/api/pets', petRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/posts', postRoutes);

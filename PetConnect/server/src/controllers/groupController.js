@@ -13,6 +13,20 @@ const ensureValidObjectId = (id, res, label = 'ObjectId') => {
 const includesObjectId = (ids, id) =>
   ids.some((existingId) => existingId.toString() === id.toString());
 
+const sanitizeGroupForUser = (group, userId) => {
+  const groupObject = typeof group.toObject === 'function' ? group.toObject() : group;
+  const adminId = groupObject.admin?._id || groupObject.admin;
+
+  if (adminId?.toString() !== userId.toString()) {
+    return {
+      ...groupObject,
+      pendingRequests: []
+    };
+  }
+
+  return groupObject;
+};
+
 const ensureGroupAdmin = (group, userId, res) => {
   if (group.admin.toString() !== userId.toString()) {
     res.status(403);
@@ -89,7 +103,7 @@ const getGroupById = async (req, res, next) => {
       throw new Error('Group not found');
     }
 
-    res.status(200).json({ group });
+    res.status(200).json({ group: sanitizeGroupForUser(group, req.user._id) });
   } catch (error) {
     next(error);
   }
@@ -149,7 +163,7 @@ const joinGroup = async (req, res, next) => {
 
       return res.status(200).json({
         message: 'Join request sent',
-        group
+        group: sanitizeGroupForUser(group, req.user._id)
       });
     }
 
@@ -158,7 +172,7 @@ const joinGroup = async (req, res, next) => {
 
     return res.status(200).json({
       message: 'Joined group successfully',
-      group
+      group: sanitizeGroupForUser(group, req.user._id)
     });
   } catch (error) {
     return next(error);

@@ -13,6 +13,7 @@ import {
   View
 } from 'react-native';
 
+import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 const PET_TYPES = ['dog', 'cat', 'bird', 'rabbit', 'other'];
@@ -27,19 +28,52 @@ const initialForm = {
   imageUri: ''
 };
 
+const initialSearch = {
+  type: '',
+  breed: '',
+  city: '',
+  minAge: '',
+  maxAge: ''
+};
+
 const getErrorMessage = (error, fallback) =>
   error.response?.data?.message || fallback;
 
+const getId = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return value._id || value.id || '';
+};
+
+const isValidNonNegativeNumber = (value) => {
+  if (!value.trim()) {
+    return true;
+  }
+
+  const numberValue = Number(value);
+  return !Number.isNaN(numberValue) && numberValue >= 0;
+};
+
 export default function MyPetsScreen() {
+  const { user } = useAuth();
   const [pets, setPets] = useState([]);
   const [form, setForm] = useState(initialForm);
+  const [search, setSearch] = useState(initialSearch);
   const [editingPetId, setEditingPetId] = useState(null);
   const [isFormVisible, setIsFormVisible] = useState(false);
+  const [isSearchActive, setIsSearchActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [formError, setFormError] = useState('');
+  const [searchError, setSearchError] = useState('');
 
   const fetchPets = useCallback(async ({ refreshing = false } = {}) => {
     try {
@@ -52,6 +86,7 @@ export default function MyPetsScreen() {
 
       const { data } = await api.get('/pets/my');
       setPets(data.pets || []);
+      setIsSearchActive(false);
     } catch (fetchError) {
       setError(getErrorMessage(fetchError, 'Could not load your pets.'));
     } finally {
@@ -67,6 +102,15 @@ export default function MyPetsScreen() {
   const updateField = (name, value) => {
     setFormError('');
     setForm((current) => ({ ...current, [name]: value }));
+  };
+
+  const updateSearchField = (name, value) => {
+    setError('');
+    setSearch((current) => {
+      const nextSearch = { ...current, [name]: value };
+      setSearchError(validateSearch(nextSearch));
+      return nextSearch;
+    });
   };
 
   const resetForm = () => {
@@ -210,6 +254,86 @@ export default function MyPetsScreen() {
     }
   };
 
+  const validateSearch = (searchValues = search) => {
+    if (!isValidNonNegativeNumber(searchValues.minAge)) {
+      return 'Minimum age must be a valid non-negative number.';
+    }
+
+    if (!isValidNonNegativeNumber(searchValues.maxAge)) {
+      return 'Maximum age must be a valid non-negative number.';
+    }
+
+    if (
+      searchValues.minAge.trim() &&
+      searchValues.maxAge.trim() &&
+      Number(searchValues.minAge) > Number(searchValues.maxAge)
+    ) {
+      return 'Minimum age cannot be greater than maximum age.';
+    }
+
+    return '';
+  };
+
+  const buildSearchParams = () => {
+    const params = {};
+
+    if (search.type) {
+      params.type = search.type;
+    }
+
+    if (search.breed.trim()) {
+      params.breed = search.breed.trim();
+    }
+
+    if (search.city.trim()) {
+      params.city = search.city.trim();
+    }
+
+    if (search.minAge.trim()) {
+      params.minAge = search.minAge.trim();
+    }
+
+    if (search.maxAge.trim()) {
+      params.maxAge = search.maxAge.trim();
+    }
+
+    return params;
+  };
+
+  const handleSearch = async () => {
+    const validationMessage = validateSearch();
+
+    if (validationMessage) {
+      setSearchError(validationMessage);
+      return;
+    }
+
+    try {
+      setError('');
+      setSearchError('');
+      setIsLoading(true);
+
+      const { data } = await api.get('/pets/search', {
+        params: buildSearchParams()
+      });
+
+      setPets(data.pets || []);
+      setIsSearchActive(true);
+    } catch (searchError) {
+      setError(getErrorMessage(searchError, 'Could not search pets.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const clearSearch = async () => {
+    setSearch(initialSearch);
+    setSearchError('');
+    await fetchPets();
+  };
+
+  const isPetOwner = (pet) => getId(pet.owner) === getId(user);
+
   return (
     <ScrollView
       style={styles.container}
@@ -233,6 +357,103 @@ export default function MyPetsScreen() {
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      <View style={styles.searchCard}>
+        <Text style={styles.searchTitle}>Search Pets</Text>
+        <Text style={styles.searchHint}>
+          Filter pets by type, breed, city, and age range.
+        </Text>
+
+        <Text style={styles.label}>Type</Text>
+        <View style={styles.typeGrid}>
+          <TouchableOpacity
+            style={[styles.typeChip, search.type === '' && styles.typeChipActive]}
+            onPress={() => updateSearchField('type', '')}
+          >
+            <Text
+              style={[
+                styles.typeChipText,
+                search.type === '' && styles.typeChipTextActive
+              ]}
+            >
+              any
+            </Text>
+          </TouchableOpacity>
+          {PET_TYPES.map((type) => (
+            <TouchableOpacity
+              key={type}
+              style={[
+                styles.typeChip,
+                search.type === type && styles.typeChipActive
+              ]}
+              onPress={() => updateSearchField('type', type)}
+            >
+              <Text
+                style={[
+                  styles.typeChipText,
+                  search.type === type && styles.typeChipTextActive
+                ]}
+              >
+                {type}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={styles.label}>Breed</Text>
+        <TextInput
+          value={search.breed}
+          onChangeText={(value) => updateSearchField('breed', value)}
+          placeholder="Golden Retriever"
+          placeholderTextColor="#8a9b91"
+          style={styles.input}
+        />
+
+        <Text style={styles.label}>City</Text>
+        <TextInput
+          value={search.city}
+          onChangeText={(value) => updateSearchField('city', value)}
+          placeholder="Tel Aviv"
+          placeholderTextColor="#8a9b91"
+          style={styles.input}
+        />
+
+        <View style={styles.row}>
+          <View style={styles.rowItem}>
+            <Text style={styles.label}>Minimum age</Text>
+            <TextInput
+              value={search.minAge}
+              onChangeText={(value) => updateSearchField('minAge', value)}
+              placeholder="1"
+              placeholderTextColor="#8a9b91"
+              keyboardType="numeric"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.rowItem}>
+            <Text style={styles.label}>Maximum age</Text>
+            <TextInput
+              value={search.maxAge}
+              onChangeText={(value) => updateSearchField('maxAge', value)}
+              placeholder="8"
+              placeholderTextColor="#8a9b91"
+              keyboardType="numeric"
+              style={styles.input}
+            />
+          </View>
+        </View>
+
+        {searchError ? <Text style={styles.searchError}>{searchError}</Text> : null}
+
+        <View style={styles.searchActions}>
+          <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
+            <Text style={styles.searchButtonText}>Search</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.clearSearchButton} onPress={clearSearch}>
+            <Text style={styles.clearSearchButtonText}>Clear</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {isFormVisible ? (
         <View style={styles.formCard}>
@@ -372,13 +593,23 @@ export default function MyPetsScreen() {
         </View>
       ) : pets.length === 0 ? (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>No pets yet</Text>
-          <Text style={styles.emptyText}>
-            Create your first pet profile to start building your PetConnect family.
+          <Text style={styles.emptyTitle}>
+            {isSearchActive ? 'No matching pets found' : 'No pets yet'}
           </Text>
-          <TouchableOpacity style={styles.emptyButton} onPress={openCreateForm}>
-            <Text style={styles.emptyButtonText}>Create Pet</Text>
-          </TouchableOpacity>
+          <Text style={styles.emptyText}>
+            {isSearchActive
+              ? 'Try changing the filters or clear search to reload your pets.'
+              : 'Create your first pet profile to start building your PetConnect family.'}
+          </Text>
+          {isSearchActive ? (
+            <TouchableOpacity style={styles.emptyButton} onPress={clearSearch}>
+              <Text style={styles.emptyButtonText}>Clear Search</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.emptyButton} onPress={openCreateForm}>
+              <Text style={styles.emptyButtonText}>Create Pet</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         <View style={styles.petList}>
@@ -398,14 +629,16 @@ export default function MyPetsScreen() {
                   <Text style={styles.petName}>{pet.name}</Text>
                   <Text style={styles.petType}>{pet.type}</Text>
                 </View>
-                <View style={styles.actions}>
-                  <TouchableOpacity onPress={() => openEditForm(pet)}>
-                    <Text style={styles.editText}>Edit</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => confirmDelete(pet)}>
-                    <Text style={styles.deleteText}>Delete</Text>
-                  </TouchableOpacity>
-                </View>
+                {isPetOwner(pet) ? (
+                  <View style={styles.actions}>
+                    <TouchableOpacity onPress={() => openEditForm(pet)}>
+                      <Text style={styles.editText}>Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => confirmDelete(pet)}>
+                      <Text style={styles.deleteText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
               </View>
 
               <View style={styles.petDetails}>
@@ -465,6 +698,58 @@ const styles = StyleSheet.create({
     color: '#b3261e',
     lineHeight: 20,
     marginBottom: 12
+  },
+  searchCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#dcebe1',
+    marginBottom: 18
+  },
+  searchTitle: {
+    color: '#173b2c',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 6
+  },
+  searchHint: {
+    color: '#5f7569',
+    lineHeight: 21,
+    marginBottom: 8
+  },
+  searchError: {
+    color: '#b3261e',
+    lineHeight: 20,
+    marginTop: 10
+  },
+  searchActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14
+  },
+  searchButton: {
+    flex: 1,
+    backgroundColor: '#2f8f68',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center'
+  },
+  searchButtonText: {
+    color: '#ffffff',
+    fontWeight: '800'
+  },
+  clearSearchButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#2f8f68',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center'
+  },
+  clearSearchButtonText: {
+    color: '#2f8f68',
+    fontWeight: '800'
   },
   formCard: {
     backgroundColor: '#ffffff',

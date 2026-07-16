@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Group = require('../models/Group');
 const Pet = require('../models/Pet');
 const Post = require('../models/Post');
+const User = require('../models/User');
 
 const ensureValidObjectId = (id, res, label = 'ObjectId') => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -13,6 +14,34 @@ const ensureValidObjectId = (id, res, label = 'ObjectId') => {
 
 const includesObjectId = (ids, id) =>
   ids.some((existingId) => existingId.toString() === id.toString());
+
+const canAccessPrivateGroup = (group, userId) =>
+  group.admin.toString() === userId.toString() || includesObjectId(group.members, userId);
+
+const getAccessibleGroupIds = async (userId) => {
+  const groups = await Group.find({
+    $or: [{ isPrivate: false }, { admin: userId }, { members: userId }]
+  }).select('_id');
+
+  return groups.map((group) => group._id);
+};
+
+const getVisiblePostFilter = async (userId, baseFilters = {}) => {
+  const accessibleGroupIds = await getAccessibleGroupIds(userId);
+
+  return {
+    $and: [
+      baseFilters,
+      {
+        $or: [
+          { group: { $exists: false } },
+          { group: null },
+          { group: { $in: accessibleGroupIds } }
+        ]
+      }
+    ]
+  };
+};
 
 const populatePost = (query) =>
   query
@@ -41,7 +70,7 @@ const ensureAuthor = (post, userId, res) => {
   }
 };
 
-const ensureGroupExists = async (groupId, res) => {
+const ensureGroupExists = async (groupId, res, userId) => {
   if (!groupId) {
     return;
   }
@@ -52,6 +81,30 @@ const ensureGroupExists = async (groupId, res) => {
   if (!group) {
     res.status(404);
     throw new Error('Group not found');
+  }
+
+  if (userId && group.isPrivate && !canAccessPrivateGroup(group, userId)) {
+    res.status(403);
+    throw new Error('Not authorized to post in this private group');
+  }
+};
+
+const ensureCanViewPost = async (post, userId, res) => {
+  if (!post.group) {
+    return;
+  }
+
+  const groupId = typeof post.group === 'object' ? post.group._id : post.group;
+  const group = await Group.findById(groupId).select('isPrivate admin members');
+
+  if (!group) {
+    res.status(404);
+    throw new Error('Group not found');
+  }
+
+  if (group.isPrivate && !canAccessPrivateGroup(group, userId)) {
+    res.status(403);
+    throw new Error('Not authorized to view posts from this private group');
   }
 };
 
@@ -76,7 +129,7 @@ const ensurePetExists = async (petId, userId, res) => {
 
 const createPost = async (req, res, next) => {
   try {
-    await ensureGroupExists(req.body.group, res);
+    await ensureGroupExists(req.body.group, res, req.user._id);
     await ensurePetExists(req.body.pet, req.user._id, res);
 
     const post = await Post.create({
@@ -104,7 +157,8 @@ const createPost = async (req, res, next) => {
 
 const getPosts = async (req, res, next) => {
   try {
-    const posts = await populatePost(Post.find()).sort({ createdAt: -1 });
+    const visibleFilter = await getVisiblePostFilter(req.user._id);
+    const posts = await populatePost(Post.find(visibleFilter)).sort({ createdAt: -1 });
 
     res.status(200).json({ posts });
   } catch (error) {
@@ -128,12 +182,18 @@ const getFeedPosts = async (req, res, next) => {
   try {
     const groups = await Group.find({ members: req.user._id }).select('_id');
     const groupIds = groups.map((group) => group._id);
+    const currentUser = await User.findById(req.user._id).select('friends');
+    const friendIds = currentUser?.friends || [];
 
-    const posts = await populatePost(
-      Post.find({
-        $or: [{ group: { $in: groupIds } }, { author: req.user._id }]
-      })
-    ).sort({
+    const visibleFilter = await getVisiblePostFilter(req.user._id, {
+      $or: [
+        { group: { $in: groupIds } },
+        { author: req.user._id },
+        { author: { $in: friendIds } }
+      ]
+    });
+
+    const posts = await populatePost(Post.find(visibleFilter)).sort({
       createdAt: -1
     });
 
@@ -169,7 +229,8 @@ const searchPosts = async (req, res, next) => {
       }
     }
 
-    const posts = await populatePost(Post.find(filters)).sort({ createdAt: -1 });
+    const visibleFilter = await getVisiblePostFilter(req.user._id, filters);
+    const posts = await populatePost(Post.find(visibleFilter)).sort({ createdAt: -1 });
 
     res.status(200).json({ posts });
   } catch (error) {
@@ -180,6 +241,14 @@ const searchPosts = async (req, res, next) => {
 const getPostById = async (req, res, next) => {
   try {
     ensureValidObjectId(req.params.id, res, 'post id');
+
+    const rawPost = await Post.findById(req.params.id);
+    if (!rawPost) {
+      res.status(404);
+      throw new Error('Post not found');
+    }
+
+    await ensureCanViewPost(rawPost, req.user._id, res);
 
     const post = await populatePost(Post.findById(req.params.id));
     if (!post) {
@@ -197,7 +266,7 @@ const updatePost = async (req, res, next) => {
   try {
     const post = await findPostById(req.params.id, res);
     ensureAuthor(post, req.user._id, res);
-    await ensureGroupExists(req.body.group, res);
+    await ensureGroupExists(req.body.group, res, req.user._id);
     await ensurePetExists(req.body.pet, req.user._id, res);
 
     const allowedUpdates = [
@@ -242,6 +311,7 @@ const deletePost = async (req, res, next) => {
 const likePost = async (req, res, next) => {
   try {
     const post = await findPostById(req.params.id, res);
+    await ensureCanViewPost(post, req.user._id, res);
 
     if (includesObjectId(post.likes, req.user._id)) {
       res.status(409);
@@ -262,6 +332,7 @@ const likePost = async (req, res, next) => {
 const commentOnPost = async (req, res, next) => {
   try {
     const post = await findPostById(req.params.id, res);
+    await ensureCanViewPost(post, req.user._id, res);
 
     post.comments.push({
       user: req.user._id,

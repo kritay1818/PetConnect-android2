@@ -57,8 +57,39 @@ export default function GroupsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [processingRequestId, setProcessingRequestId] = useState('');
   const [error, setError] = useState('');
   const [formError, setFormError] = useState('');
+
+  const enrichAdminGroups = useCallback(
+    async (groupsToCheck) => {
+      if (!user?.id) {
+        return groupsToCheck;
+      }
+
+      const adminGroups = groupsToCheck.filter((group) => getId(group.admin) === user.id);
+
+      if (!adminGroups.length) {
+        return groupsToCheck;
+      }
+
+      const detailResponses = await Promise.all(
+        adminGroups.map((group) => api.get(`/groups/${group._id}`))
+      );
+      const detailedGroups = detailResponses.reduce((detailsById, response) => {
+        const detailedGroup = response.data.group;
+
+        if (detailedGroup?._id) {
+          detailsById[detailedGroup._id] = detailedGroup;
+        }
+
+        return detailsById;
+      }, {});
+
+      return groupsToCheck.map((group) => detailedGroups[group._id] || group);
+    },
+    [user?.id]
+  );
 
   const fetchGroups = useCallback(async ({ refreshing = false } = {}) => {
     try {
@@ -74,15 +105,20 @@ export default function GroupsScreen() {
         api.get('/groups/my')
       ]);
 
-      setGroups(allResponse.data.groups || []);
-      setMyGroups(myResponse.data.groups || []);
+      const [nextGroups, nextMyGroups] = await Promise.all([
+        enrichAdminGroups(allResponse.data.groups || []),
+        enrichAdminGroups(myResponse.data.groups || [])
+      ]);
+
+      setGroups(nextGroups);
+      setMyGroups(nextMyGroups);
     } catch (fetchError) {
       setError(getErrorMessage(fetchError, 'Could not load groups.'));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [enrichAdminGroups]);
 
   useEffect(() => {
     fetchGroups();
@@ -194,7 +230,8 @@ export default function GroupsScreen() {
       }
 
       const { data } = await api.get('/groups/search', { params });
-      setGroups(data.groups || []);
+      const enrichedGroups = await enrichAdminGroups(data.groups || []);
+      setGroups(enrichedGroups);
       setActiveTab('all');
     } catch (searchError) {
       setError(getErrorMessage(searchError, 'Could not search groups.'));
@@ -249,16 +286,55 @@ export default function GroupsScreen() {
     }
   };
 
+  const approveRequest = async (groupId, userId) => {
+    const requestKey = `${groupId}:${userId}:approve`;
+
+    try {
+      setError('');
+      setProcessingRequestId(requestKey);
+      await api.post(`/groups/${groupId}/approve/${userId}`);
+      await fetchGroups();
+    } catch (approveError) {
+      setError(getErrorMessage(approveError, 'Could not approve join request.'));
+    } finally {
+      setProcessingRequestId('');
+    }
+  };
+
+  const rejectRequest = async (groupId, userId) => {
+    const requestKey = `${groupId}:${userId}:reject`;
+
+    try {
+      setError('');
+      setProcessingRequestId(requestKey);
+      await api.post(`/groups/${groupId}/reject/${userId}`);
+      await fetchGroups();
+    } catch (rejectError) {
+      setError(getErrorMessage(rejectError, 'Could not reject join request.'));
+    } finally {
+      setProcessingRequestId('');
+    }
+  };
+
   const isAdmin = (group) => getId(group.admin) === user?.id;
   const isMember = (group) =>
     (group.members || []).some((member) => getId(member) === user?.id);
   const isPending = (group) =>
     (group.pendingRequests || []).some((member) => getId(member) === user?.id);
 
+  const getRequestUserName = (requestUser) => {
+    if (typeof requestUser === 'object') {
+      return requestUser.username || requestUser.email || requestUser._id || 'PetConnect user';
+    }
+
+    return requestUser || 'PetConnect user';
+  };
+
   const renderGroupCard = (group) => {
     const adminName =
       typeof group.admin === 'object' ? group.admin.username : 'Unknown admin';
     const membersCount = group.members?.length || 0;
+    const pendingRequests = group.pendingRequests || [];
     const currentUserIsAdmin = isAdmin(group);
     const currentUserIsMember = isMember(group);
     const currentUserIsPending = isPending(group);
@@ -296,6 +372,61 @@ export default function GroupsScreen() {
           <Text style={styles.detailText}>Admin: {adminName}</Text>
           <Text style={styles.detailText}>Members: {membersCount}</Text>
         </View>
+
+        {currentUserIsAdmin ? (
+          <View style={styles.requestsPanel}>
+            <Text style={styles.requestsTitle}>Pending Join Requests</Text>
+            {pendingRequests.length ? (
+              pendingRequests.map((requestUser) => {
+                const requestUserId = getId(requestUser);
+                const approvingKey = `${group._id}:${requestUserId}:approve`;
+                const rejectingKey = `${group._id}:${requestUserId}:reject`;
+                const isProcessing =
+                  processingRequestId === approvingKey ||
+                  processingRequestId === rejectingKey;
+
+                return (
+                  <View key={requestUserId} style={styles.requestRow}>
+                    <View style={styles.requestInfo}>
+                      <Text style={styles.requestName}>
+                        {getRequestUserName(requestUser)}
+                      </Text>
+                      <Text style={styles.requestMeta}>Wants to join this group</Text>
+                    </View>
+                    <View style={styles.requestActions}>
+                      <TouchableOpacity
+                        style={[
+                          styles.approveButton,
+                          isProcessing && styles.disabledButton
+                        ]}
+                        onPress={() => approveRequest(group._id, requestUserId)}
+                        disabled={isProcessing}
+                      >
+                        <Text style={styles.approveButtonText}>
+                          {processingRequestId === approvingKey ? 'Approving...' : 'Approve'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.rejectButton,
+                          isProcessing && styles.disabledButton
+                        ]}
+                        onPress={() => rejectRequest(group._id, requestUserId)}
+                        disabled={isProcessing}
+                      >
+                        <Text style={styles.rejectButtonText}>
+                          {processingRequestId === rejectingKey ? 'Rejecting...' : 'Reject'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })
+            ) : (
+              <Text style={styles.noRequestsText}>No pending requests.</Text>
+            )}
+          </View>
+        ) : null}
 
         {!currentUserIsAdmin && !currentUserIsMember && !currentUserIsPending ? (
           <TouchableOpacity
@@ -855,6 +986,67 @@ const styles = StyleSheet.create({
   },
   detailText: {
     color: '#5f7569'
+  },
+  requestsPanel: {
+    backgroundColor: '#fbfdfb',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#dcebe1',
+    padding: 12,
+    marginBottom: 12
+  },
+  requestsTitle: {
+    color: '#173b2c',
+    fontWeight: '800',
+    marginBottom: 10
+  },
+  requestRow: {
+    borderTopWidth: 1,
+    borderTopColor: '#edf4ef',
+    paddingTop: 10,
+    marginTop: 10
+  },
+  requestInfo: {
+    marginBottom: 10
+  },
+  requestName: {
+    color: '#244536',
+    fontWeight: '800',
+    marginBottom: 3
+  },
+  requestMeta: {
+    color: '#5f7569'
+  },
+  requestActions: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  approveButton: {
+    flex: 1,
+    backgroundColor: '#2f8f68',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center'
+  },
+  approveButtonText: {
+    color: '#ffffff',
+    fontWeight: '800'
+  },
+  rejectButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#b3261e',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center'
+  },
+  rejectButtonText: {
+    color: '#b3261e',
+    fontWeight: '800'
+  },
+  noRequestsText: {
+    color: '#5f7569',
+    lineHeight: 20
   },
   joinButton: {
     backgroundColor: '#2f8f68',
